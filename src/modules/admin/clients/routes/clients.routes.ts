@@ -31,6 +31,19 @@ adminClientsRoutes.get(
   asyncHandler(clientsController.getOnboarding),
 );
 
+adminClientsRoutes.post(
+  '/:id/invitations',
+  validate({
+    params: tenantIdParam,
+    body: z.object({
+      email: z.string().trim().toLowerCase().email(),
+      // Platform admin may grant any role, including super_admin (platform staff).
+      role: z.enum(['member', 'member_plus', 'member_pro', 'org_admin', 'super_admin']).default('member'),
+    }),
+  }),
+  asyncHandler(clientsController.inviteUser),
+);
+
 adminClientsRoutes.put(
   '/:id/clickup-mapping',
   validate({

@@ -7,8 +7,17 @@ export const wishlistService = {
     return { cycle, items };
   },
 
-  async submit(tenantId: string, userId: string, title: string, description?: string) {
-    return wishlistRepo.submit(tenantId, userId, title, description ?? null);
+  async submit(
+    tenantId: string,
+    userId: string,
+    input: { title: string; description?: string; referenceVideoUrl?: string; department?: string },
+  ) {
+    return wishlistRepo.submit(tenantId, userId, {
+      title: input.title,
+      description: input.description ?? null,
+      referenceVideoUrl: input.referenceVideoUrl ?? null,
+      department: input.department ?? null,
+    });
   },
 
   async vote(tenantId: string, itemId: string, userId: string) {

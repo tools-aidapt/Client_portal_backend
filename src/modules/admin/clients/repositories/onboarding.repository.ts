@@ -99,9 +99,10 @@ export const onboardingRepo = {
     email: string,
     invitedBy: string | null,
   ): Promise<{ id: string; token: string }> {
+    // The first client contact becomes the org admin, who can then invite their team.
     const { rows } = await client.query<{ id: string; token: string }>(
       `insert into core.invitations (tenant_id, email, role, invited_by)
-       values ($1, $2, 'member_pro', $3)
+       values ($1, $2, 'org_admin', $3)
        returning id, token`,
       [tenantId, email, invitedBy],
     );
@@ -155,6 +156,7 @@ export const onboardingRepo = {
   async enqueueOutbox(
     client: PoolClient,
     e: {
+      aggregate?: string;
       aggregateId: string;
       eventType: OutboxEventType;
       payload: Record<string, unknown>;
@@ -163,10 +165,27 @@ export const onboardingRepo = {
   ): Promise<void> {
     await client.query(
       `insert into core.outbox (aggregate, aggregate_id, event_type, payload, idempotency_key)
-       values ('onboarding', $1, $2, $3, $4)
+       values ($1, $2, $3, $4, $5)
        on conflict (idempotency_key) do nothing`,
-      [e.aggregateId, e.eventType, JSON.stringify(e.payload), e.idempotencyKey],
+      [e.aggregate ?? 'onboarding', e.aggregateId, e.eventType, JSON.stringify(e.payload), e.idempotencyKey],
     );
+  },
+
+  /** Create a pending invitation for a tenant (used by the admin invite endpoint). */
+  async createInvitation(
+    client: PoolClient,
+    tenantId: string,
+    email: string,
+    role: string,
+    invitedBy: string | null,
+  ): Promise<{ id: string; token: string }> {
+    const { rows } = await client.query<{ id: string; token: string }>(
+      `insert into core.invitations (tenant_id, email, role, invited_by)
+       values ($1, $2, $3::core.user_role, $4)
+       returning id, token`,
+      [tenantId, email, role, invitedBy],
+    );
+    return rows[0]!;
   },
 
   // ---- Reads (admin observability) ----

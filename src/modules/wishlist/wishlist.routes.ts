@@ -25,6 +25,8 @@ wishlistRoutes.post(
     body: z.object({
       title: z.string().trim().min(1).max(200),
       description: z.string().trim().max(2000).optional(),
+      reference_video_url: z.string().trim().url().max(2000).optional(),
+      department: z.string().trim().max(100).optional(),
     }),
   }),
   asyncHandler(wishlistController.submit),

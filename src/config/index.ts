@@ -20,6 +20,13 @@ export const config = {
   logger: {
     level: env.LOG_LEVEL,
   },
+  auth: {
+    accessSecret: env.JWT_ACCESS_SECRET,
+    refreshSecret: env.JWT_REFRESH_SECRET,
+    accessTtl: env.JWT_ACCESS_TTL,
+    refreshTtl: env.JWT_REFRESH_TTL,
+    bcryptRounds: env.BCRYPT_ROUNDS,
+  },
   supabase: {
     url: env.SUPABASE_URL,
     anonKey: env.SUPABASE_ANON_KEY,
@@ -37,6 +44,12 @@ export const config = {
     spaceIds: env.CLICKUP_SPACE_IDS
       ? env.CLICKUP_SPACE_IDS.split(',').map((s) => s.trim()).filter(Boolean)
       : [],
+  },
+  web: {
+    portalBaseUrl: env.PORTAL_BASE_URL,
+  },
+  n8n: {
+    inviteWebhookUrl: env.N8N_INVITE_WEBHOOK_URL,
   },
 } as const;
 

@@ -7,3 +7,5 @@ process.env.SUPABASE_URL ??= 'https://test.supabase.co';
 process.env.SUPABASE_ANON_KEY ??= 'test-anon-key';
 process.env.SUPABASE_SERVICE_ROLE_KEY ??= 'test-service-role-key';
 process.env.DATABASE_URL ??= 'postgresql://postgres:test@localhost:5432/postgres';
+process.env.JWT_ACCESS_SECRET ??= 'test-access-secret-at-least-32-chars-long';
+process.env.JWT_REFRESH_SECRET ??= 'test-refresh-secret-at-least-32-chars-long';

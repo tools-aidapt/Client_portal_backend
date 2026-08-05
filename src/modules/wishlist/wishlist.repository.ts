@@ -17,7 +17,8 @@ export const wishlistRepo = {
   /** Items with per-cycle vote counts and whether the caller has voted. */
   async items(tenantId: string, cycleId: string | null, userId: string): Promise<Array<Record<string, unknown>>> {
     const { rows } = await pool.query(
-      `select wi.id, wi.title, wi.description, wi.state, wi.created_at,
+      `select wi.id, wi.title, wi.description, wi.reference_video_url, wi.department,
+              wi.state, wi.created_at,
               (select count(*)::int from portal.wishlist_votes v
                  where v.cycle_id = $2 and v.item_id = wi.id) as votes,
               exists(select 1 from portal.wishlist_votes v
@@ -30,12 +31,22 @@ export const wishlistRepo = {
     return rows;
   },
 
-  async submit(tenantId: string, userId: string, title: string, description: string | null): Promise<Record<string, unknown>> {
+  async submit(
+    tenantId: string,
+    userId: string,
+    input: {
+      title: string;
+      description: string | null;
+      referenceVideoUrl: string | null;
+      department: string | null;
+    },
+  ): Promise<Record<string, unknown>> {
     const { rows } = await pool.query(
-      `insert into portal.wishlist_items (tenant_id, title, description, state, submitted_by)
-       values ($1, $2, $3, 'candidate', $4)
-       returning id, title, description, state, created_at`,
-      [tenantId, title, description, userId],
+      `insert into portal.wishlist_items
+         (tenant_id, title, description, reference_video_url, department, state, submitted_by)
+       values ($1, $2, $3, $4, $5, 'candidate', $6)
+       returning id, title, description, reference_video_url, department, state, created_at`,
+      [tenantId, input.title, input.description, input.referenceVideoUrl, input.department, userId],
     );
     return rows[0]!;
   },

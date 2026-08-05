@@ -6,6 +6,11 @@ import { syncRoutes, clickupWebhookRoutes } from '@modules/sync/clickup/sync.rou
 import { portalRoutes } from '@modules/portal/portal.routes.js';
 import { wishlistRoutes, votingRoutes } from '@modules/wishlist/wishlist.routes.js';
 import { reportsRoutes } from '@modules/reports/reports.routes.js';
+import {
+  adminAutomationRoutes,
+  automationHealthRoutes,
+  n8nWebhookRoutes,
+} from '@modules/automation/automation.routes.js';
 
 /**
  * Root API router. Every feature module mounts its routes here.
@@ -19,13 +24,14 @@ apiRouter.use('/auth', authRoutes);
 // Invitation acceptance — first-user activation (design §9.3 / §10.3)
 apiRouter.use('/invitations', invitationRoutes);
 
-// Client-facing Portal reads (design §10.4)
-apiRouter.use('/', portalRoutes);
+// Client-facing Portal (design §10.4)
 apiRouter.use('/wishlist', wishlistRoutes);
 apiRouter.use('/reports', reportsRoutes);
+apiRouter.use('/automations', automationHealthRoutes);
 
 // Admin — client lifecycle & onboarding (design §10.2)
 apiRouter.use('/admin/clients', adminClientsRoutes);
+apiRouter.use('/admin/clients/:id/automations', adminAutomationRoutes);
 
 // Internal — service-role only (design §10.6)
 apiRouter.use('/internal/outbox', outboxRoutes);
@@ -34,3 +40,8 @@ apiRouter.use('/internal/voting', votingRoutes);
 
 // Webhooks — signature-verified, service-role (design §10.6)
 apiRouter.use('/webhooks/clickup', clickupWebhookRoutes);
+apiRouter.use('/webhooks/n8n', n8nWebhookRoutes);
+
+// Portal reads are mounted at '/' with a router-level `authenticate`, so this
+// MUST be last — otherwise its auth guard intercepts the service/webhook routes.
+apiRouter.use('/', portalRoutes);

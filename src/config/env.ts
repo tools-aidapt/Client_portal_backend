@@ -20,6 +20,15 @@ const envSchema = z.object({
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
 
+  // Self-hosted auth (JWT). Access tokens are signed/verified with these
+  // secrets; refresh tokens are opaque and stored hashed in the database.
+  JWT_ACCESS_SECRET: z.string().min(32),
+  JWT_REFRESH_SECRET: z.string().min(32),
+  // Lifetimes accepted as `ms`/`vercel/ms` strings (e.g. "15m", "30d").
+  JWT_ACCESS_TTL: z.string().default('15m'),
+  JWT_REFRESH_TTL: z.string().default('30d'),
+  BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
+
   // Supabase
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(1),
@@ -39,6 +48,11 @@ const envSchema = z.object({
   CLICKUP_WEBHOOK_SECRET: z.string().min(1).optional(),
   // Comma-separated ClickUp space ids the hourly pull sync walks.
   CLICKUP_SPACE_IDS: z.string().optional(),
+
+  // Frontend base URL used to build invitation links (e.g. https://portal.aidapt.co).
+  PORTAL_BASE_URL: z.string().url().optional(),
+  // n8n webhook that sends the invitation email. If unset, invite emails are skipped.
+  N8N_INVITE_WEBHOOK_URL: z.string().url().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

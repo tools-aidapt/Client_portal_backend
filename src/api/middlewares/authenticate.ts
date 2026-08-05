@@ -1,11 +1,13 @@
 import type { RequestHandler } from 'express';
 import { UnauthorizedError } from '@common/errors/index.js';
-import { supabaseAdmin, createUserScopedClient } from '@infra/supabase/client.js';
 import { asyncHandler } from '@common/utils/async-handler.js';
+import { verifyAccessToken } from '@modules/auth/utils/tokens.js';
 
 /**
- * Verifies the Supabase JWT from the Authorization header and attaches the
- * authenticated user plus a request-scoped (RLS-aware) client to the request.
+ * Verifies the self-hosted access token (JWT) from the Authorization header and
+ * attaches the authenticated user to the request. The token's `app_metadata`
+ * carries the `platform_admin` / `tenant_roles` claims consumed by the
+ * authorization middlewares.
  */
 export const authenticate: RequestHandler = asyncHandler(async (req, _res, next) => {
   const header = req.headers.authorization;
@@ -14,17 +16,9 @@ export const authenticate: RequestHandler = asyncHandler(async (req, _res, next)
   }
 
   const token = header.slice('Bearer '.length);
-  const { data, error } = await supabaseAdmin.auth.getUser(token);
+  const user = verifyAccessToken(token);
 
-  if (error || !data.user) {
-    throw new UnauthorizedError('Invalid or expired token');
-  }
-
-  req.auth = {
-    user: data.user,
-    token,
-    db: createUserScopedClient(token),
-  };
+  req.auth = { user, token };
 
   next();
 });

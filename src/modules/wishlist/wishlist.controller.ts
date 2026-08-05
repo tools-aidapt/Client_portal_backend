@@ -17,8 +17,18 @@ export const wishlistController = {
 
   async submit(req: Request, res: Response): Promise<void> {
     const { tenantId, userId } = ctx(req);
-    const { title, description } = req.body as { title: string; description?: string };
-    const item = await wishlistService.submit(tenantId, userId, title, description);
+    const { title, description, reference_video_url, department } = req.body as {
+      title: string;
+      description?: string;
+      reference_video_url?: string;
+      department?: string;
+    };
+    const item = await wishlistService.submit(tenantId, userId, {
+      title,
+      description,
+      referenceVideoUrl: reference_video_url,
+      department,
+    });
     res.status(StatusCodes.CREATED).json(ok(item));
   },
 

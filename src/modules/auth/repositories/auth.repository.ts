@@ -1,9 +1,17 @@
 import { pool, withTransaction } from '@infra/db/pool.js';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
 } from '@common/errors/index.js';
+import type { AccessClaims } from '../utils/tokens.js';
+
+export interface CredentialRow {
+  user_id: string;
+  email: string;
+  password_hash: string;
+}
 
 export interface MembershipView {
   tenant_id: string;
@@ -13,11 +21,24 @@ export interface MembershipView {
   status: string;
 }
 
+export interface ProfileFields {
+  fullName?: string;
+  jobTitle?: string;
+  department?: string;
+  phone?: string;
+  avatarUrl?: string;
+  interests?: string[];
+  locale?: string;
+}
+
 export interface MeView {
   id: string;
   full_name: string | null;
   avatar_url: string | null;
   job_title: string | null;
+  department: string | null;
+  phone: string | null;
+  interests: string[] | null;
   locale: string | null;
   is_platform_admin: boolean;
   memberships: MembershipView[];
@@ -25,12 +46,218 @@ export interface MeView {
 
 export const authRepo = {
   /**
+   * Create a profile + credentials pair in one transaction. Throws
+   * ConflictError if the email is already registered (case-insensitive).
+   */
+  async createUser(input: {
+    email: string;
+    passwordHash: string;
+    fullName?: string;
+  }): Promise<{ userId: string }> {
+    return withTransaction(async (client) => {
+      const { rows } = await client.query<{ id: string }>(
+        `insert into core.profiles (full_name) values ($1) returning id`,
+        [input.fullName ?? null],
+      );
+      const userId = rows[0]!.id;
+      try {
+        await client.query(
+          `insert into core.user_credentials (user_id, email, password_hash)
+           values ($1, $2, $3)`,
+          [userId, input.email, input.passwordHash],
+        );
+      } catch (err) {
+        if ((err as { code?: string }).code === '23505') {
+          throw new ConflictError('Email already registered');
+        }
+        throw err;
+      }
+      return { userId };
+    });
+  },
+
+  /**
+   * Invitation-gated registration. Validates the invite token, creates the
+   * profile + credentials (email taken from the invite so the user can't pick a
+   * different one), grants membership in the invited tenant/role, and marks the
+   * invitation accepted — all atomically. Returns identity + granted membership.
+   */
+  async registerViaInvitation(input: {
+    token: string;
+    passwordHash: string;
+    profile: ProfileFields;
+  }): Promise<{ userId: string; email: string; tenantId: string; role: string }> {
+    return withTransaction(async (client) => {
+      const { rows } = await client.query<{
+        id: string;
+        tenant_id: string;
+        email: string;
+        role: string;
+        status: string;
+        invited_by: string | null;
+        expired: boolean;
+      }>(
+        `select id, tenant_id, email, role, status, invited_by,
+                (expires_at <= now()) as expired
+           from core.invitations where token = $1 for update`,
+        [input.token],
+      );
+      const inv = rows[0];
+      if (!inv) throw new NotFoundError('Invitation not found');
+      if (inv.status === 'revoked') throw new ForbiddenError('Invitation was revoked');
+      if (inv.status === 'accepted') throw new BadRequestError('Invitation already used');
+      if (inv.status === 'expired' || inv.expired) {
+        await client.query(
+          `update core.invitations set status = 'expired' where id = $1 and status = 'pending'`,
+          [inv.id],
+        );
+        throw new BadRequestError('Invitation expired');
+      }
+
+      const existing = await client.query(
+        `select 1 from core.user_credentials where lower(email) = lower($1)`,
+        [inv.email],
+      );
+      if ((existing.rowCount ?? 0) > 0) {
+        throw new ConflictError(
+          'An account with this email already exists — sign in and accept the invitation instead',
+        );
+      }
+
+      // A super_admin invitation also grants the platform-admin flag.
+      const p = input.profile;
+      const prof = await client.query<{ id: string }>(
+        `insert into core.profiles
+           (full_name, job_title, department, phone, avatar_url, interests, locale, is_platform_admin)
+         values ($1, $2, $3, $4, $5, $6, coalesce($7, 'en'), $8)
+         returning id`,
+        [
+          p.fullName ?? null, p.jobTitle ?? null, p.department ?? null, p.phone ?? null,
+          p.avatarUrl ?? null, p.interests ?? null, p.locale ?? null,
+          inv.role === 'super_admin',
+        ],
+      );
+      const userId = prof.rows[0]!.id;
+      await client.query(
+        `insert into core.user_credentials (user_id, email, password_hash) values ($1, $2, $3)`,
+        [userId, inv.email, input.passwordHash],
+      );
+      await client.query(
+        `insert into core.memberships (user_id, tenant_id, role, status, invited_by)
+         values ($1, $2, $3::core.user_role, 'active', $4)`,
+        [userId, inv.tenant_id, inv.role, inv.invited_by],
+      );
+      await client.query(
+        `update core.invitations set status = 'accepted', accepted_at = now() where id = $1`,
+        [inv.id],
+      );
+      await client.query(
+        `insert into core.audit_log (actor_id, tenant_id, action, target, metadata)
+         values ($1, $2, 'invitation.registered', $3,
+                 jsonb_build_object('invitation_id', $3::text, 'role', $4::text))`,
+        [userId, inv.tenant_id, inv.id, inv.role],
+      );
+
+      return { userId, email: inv.email, tenantId: inv.tenant_id, role: inv.role };
+    });
+  },
+
+  /** Look up credentials by email (case-insensitive). */
+  async findCredentialsByEmail(email: string): Promise<CredentialRow | null> {
+    const { rows } = await pool.query<CredentialRow>(
+      `select user_id, email, password_hash
+         from core.user_credentials
+        where lower(email) = lower($1)`,
+      [email],
+    );
+    return rows[0] ?? null;
+  },
+
+  /** Look up a user's email by id (used when reissuing tokens on refresh). */
+  async getEmailByUserId(userId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ email: string }>(
+      `select email from core.user_credentials where user_id = $1`,
+      [userId],
+    );
+    return rows[0]?.email ?? null;
+  },
+
+  /**
+   * Authorization claims for a user: platform-admin flag + active tenant roles.
+   * Embedded into the access token at sign-in / refresh.
+   */
+  async getAccessClaims(userId: string): Promise<AccessClaims> {
+    const [p, m] = await Promise.all([
+      pool.query<{ is_platform_admin: boolean }>(
+        `select is_platform_admin from core.profiles where id = $1`,
+        [userId],
+      ),
+      pool.query<{ tenant_id: string; role: string }>(
+        `select tenant_id, role from core.memberships
+          where user_id = $1 and status = 'active'`,
+        [userId],
+      ),
+    ]);
+    return {
+      platform_admin: p.rows[0]?.is_platform_admin === true,
+      tenant_roles: Object.fromEntries(m.rows.map((r) => [r.tenant_id, r.role])),
+    };
+  },
+
+  /** Persist a hashed refresh token. */
+  async storeRefreshToken(input: {
+    userId: string;
+    tokenHash: string;
+    expiresAt: Date;
+    userAgent?: string;
+  }): Promise<void> {
+    await pool.query(
+      `insert into core.refresh_tokens (user_id, token_hash, expires_at, user_agent)
+       values ($1, $2, $3, $4)`,
+      [input.userId, input.tokenHash, input.expiresAt, input.userAgent ?? null],
+    );
+  },
+
+  /** Find a live (unrevoked, unexpired) refresh token by its hash. */
+  async findActiveRefreshToken(
+    tokenHash: string,
+  ): Promise<{ id: string; userId: string } | null> {
+    const { rows } = await pool.query<{ id: string; user_id: string }>(
+      `select id, user_id from core.refresh_tokens
+        where token_hash = $1 and revoked_at is null and expires_at > now()`,
+      [tokenHash],
+    );
+    const row = rows[0];
+    return row ? { id: row.id, userId: row.user_id } : null;
+  },
+
+  /** Revoke a single refresh token by hash. Returns true if one was revoked. */
+  async revokeRefreshToken(tokenHash: string): Promise<boolean> {
+    const { rowCount } = await pool.query(
+      `update core.refresh_tokens set revoked_at = now()
+        where token_hash = $1 and revoked_at is null`,
+      [tokenHash],
+    );
+    return (rowCount ?? 0) > 0;
+  },
+
+  /** Revoke every live refresh token for a user (logout-everywhere). */
+  async revokeAllRefreshTokens(userId: string): Promise<void> {
+    await pool.query(
+      `update core.refresh_tokens set revoked_at = now()
+        where user_id = $1 and revoked_at is null`,
+      [userId],
+    );
+  },
+
+  /**
    * Own profile + active memberships. Filtered strictly by the authenticated
    * user id, so reading via the (RLS-bypassing) pool is safe here.
    */
   async getMe(userId: string): Promise<MeView | null> {
     const { rows } = await pool.query<MeView>(
-      `select p.id, p.full_name, p.avatar_url, p.job_title, p.locale, p.is_platform_admin,
+      `select p.id, p.full_name, p.avatar_url, p.job_title, p.department, p.phone,
+              p.interests, p.locale, p.is_platform_admin,
               coalesce(
                 jsonb_agg(
                   jsonb_build_object(
@@ -48,6 +275,26 @@ export const authRepo = {
       [userId],
     );
     return rows[0] ?? null;
+  },
+
+  /** Update editable profile fields (null = leave unchanged). Returns fresh /me. */
+  async updateProfile(userId: string, f: ProfileFields): Promise<MeView | null> {
+    await pool.query(
+      `update core.profiles set
+         full_name  = coalesce($2, full_name),
+         job_title  = coalesce($3, job_title),
+         department = coalesce($4, department),
+         phone      = coalesce($5, phone),
+         avatar_url = coalesce($6, avatar_url),
+         interests  = coalesce($7, interests),
+         locale     = coalesce($8, locale)
+       where id = $1`,
+      [
+        userId, f.fullName ?? null, f.jobTitle ?? null, f.department ?? null,
+        f.phone ?? null, f.avatarUrl ?? null, f.interests ?? null, f.locale ?? null,
+      ],
+    );
+    return this.getMe(userId);
   },
 
   /**

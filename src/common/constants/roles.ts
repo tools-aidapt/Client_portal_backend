@@ -3,7 +3,8 @@ export const ROLE_RANK = {
   member: 1,
   member_plus: 2,
   member_pro: 3,
-  super_admin: 99,
+  org_admin: 4, // per-tenant admin (invite/manage within own org)
+  super_admin: 99, // Aidapt platform staff (cross-tenant)
 } as const;
 
 export type RoleName = keyof typeof ROLE_RANK;

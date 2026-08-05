@@ -1,4 +1,5 @@
 import { logger } from '@infra/logger/index.js';
+import { sendInviteEmail } from '@modules/invitations/invite-email.js';
 import type { OutboxRow } from './outbox.repository.js';
 
 /**
@@ -21,10 +22,7 @@ export const handlers: Record<string, OutboxHandler> = {
   },
 
   'email.invite': async (row) => {
-    logger.warn(
-      { email: row.payload.email },
-      'STUB email.invite — would send the client-admin invitation magic link',
-    );
+    await sendInviteEmail(String(row.payload.token));
   },
 
   'n8n.trigger_sync': async (row) => {
