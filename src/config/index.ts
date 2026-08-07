@@ -48,6 +48,9 @@ export const config = {
       : [],
     teamId: env.CLICKUP_TEAM_ID,
   },
+  pdf: {
+    chromePath: env.PUPPETEER_EXECUTABLE_PATH,
+  },
   web: {
     portalBaseUrl: env.PORTAL_BASE_URL,
     onboardingFormUrl: env.ONBOARDING_FORM_URL,

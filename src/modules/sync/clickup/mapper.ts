@@ -1,4 +1,4 @@
-import type { ClickUpCustomField, ClickUpDocPage, ClickUpTask } from '@infra/clickup/client.js';
+import type { ClickUpCustomField, ClickUpTask } from '@infra/clickup/client.js';
 
 /**
  * Custom-field IDs on the Aidapt ClickUp workspace (9012897228). These are
@@ -215,69 +215,43 @@ export function isClientVisible(task: ClickUpTask): boolean {
 // Report Doc pages -> portal.reports
 // ---------------------------------------------------------------------------
 
-/** Normalized row ready to upsert into portal.reports. */
-export interface ReportUpsert {
-  tenantId: string;
-  clickupDocId: string;
-  clickupPageId: string;
-  title: string;
-  periodStart: string; // YYYY-MM-DD
-  periodEnd: string; // YYYY-MM-DD
-  summaryMd: string | null;
-  committedCount: number | null;
-  deliveredCount: number | null;
-  publishedAt: string; // ISO timestamp
-}
-
 /**
- * A report page is titled `Report <n>: <kind> - <DD Month YYYY>`. The number and
- * the trailing date are the only parts we rely on — the middle varies ("Bi-Monthly
- * Status Report" today). Sibling pages that don't match (e.g. the "Internal Status
- * Briefing" nested under Report 3, or the Handbook templates) are not client
- * reports and must not sync.
+ * A trailing "02 July 2026" / "31st July 2026". Shared with `report-mapper.ts`,
+ * which uses it to recover a period from a Doc or page name when the body has
+ * no parseable "Report Period" line.
  */
-const REPORT_NUMBER_RE = /^\s*Report\s+(\d+)\s*[:.]/i;
-const TRAILING_DATE_RE = /(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,})\s+(\d{4})\s*$/;
+export const TRAILING_DATE_RE = /(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,})\s+(\d{4})\s*$/;
 
-const MONTHS = [
+export const MONTHS = [
   'jan', 'feb', 'mar', 'apr', 'may', 'jun',
   'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
 ];
 
-function pad2(n: number): string {
+export function pad2(n: number): string {
   return String(n).padStart(2, '0');
 }
 
-/** Parse "02 July 2026" / "31st July 2026" -> "2026-07-02". Null if unparseable. */
-function parseLongDate(text: string): string | null {
-  const m = TRAILING_DATE_RE.exec(text);
-  if (!m) return null;
-  const day = Number(m[1]);
-  const month = MONTHS.indexOf(m[2]!.slice(0, 3).toLowerCase());
-  const year = Number(m[3]);
-  if (month < 0) return null;
-  // Reject impossible days (e.g. "31 February") by round-tripping through UTC.
-  const d = new Date(Date.UTC(year, month, day));
-  if (d.getUTCMonth() !== month || d.getUTCDate() !== day) return null;
-  return `${year}-${pad2(month + 1)}-${pad2(day)}`;
-}
-
-/** Shift a YYYY-MM-DD date by whole days, in UTC. */
-function addDays(date: string, days: number): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+/** Month name -> 0-based index, or -1. Accepts "Jul", "July", "JULY". */
+export function monthIndex(name: string): number {
+  return MONTHS.indexOf(name.slice(0, 3).toLowerCase());
 }
 
 /**
- * The report number and the date it covers up to, or null when the page isn't a
- * client report at all.
+ * Build YYYY-MM-DD, rejecting impossible days ("31 February") by round-tripping
+ * through UTC. Null when the parts don't describe a real date.
  */
-export function parseReportPageTitle(name: string): { number: number; date: string } | null {
-  const num = REPORT_NUMBER_RE.exec(name);
-  if (!num) return null;
-  const date = parseLongDate(name);
-  return date ? { number: Number(num[1]), date } : null;
+export function toIsoDate(year: number, month: number, day: number): string | null {
+  if (month < 0 || month > 11) return null;
+  const d = new Date(Date.UTC(year, month, day));
+  if (d.getUTCFullYear() !== year || d.getUTCMonth() !== month || d.getUTCDate() !== day) return null;
+  return `${year}-${pad2(month + 1)}-${pad2(day)}`;
+}
+
+/** Parse a trailing "02 July 2026" -> "2026-07-02". Null if unparseable. */
+export function parseLongDate(text: string): string | null {
+  const m = TRAILING_DATE_RE.exec(text);
+  if (!m) return null;
+  return toIsoDate(Number(m[3]), monthIndex(m[2]!), Number(m[1]));
 }
 
 /**
@@ -399,64 +373,4 @@ export function normalizeDocMarkdown(md: string): string {
   }
   flushRun();
   return out.join('\n');
-}
-
-/**
- * Map one report Doc page to a portal.reports row.
- *
- * `periodEnd` is the date in the page title — the date the report was issued and
- * the last day it covers. `periodStart` is derived by the caller from the
- * preceding report (see `deriveReportPeriods`): the Doc states its period only
- * as prose ("Report Period: Weeks 18–19"), never as a start date.
- *
- * `publishedAt` is that same issue date rather than the page's ClickUp
- * `date_created` — Reports 1–5 were backfilled into the Doc in one batch (all
- * created ~19 May 2026), so `date_created` would misdate every early report.
- */
-export function mapReportPage(
-  page: ClickUpDocPage,
-  ctx: { tenantId: string; docId: string; periodStart: string; periodEnd: string },
-): ReportUpsert {
-  // Counts are read from the raw export; normalisation only touches paragraph
-  // line breaks, but parsing before it keeps the two concerns independent.
-  const counts = parseTrackerCounts(page.content ?? '');
-  const summaryMd = page.content ? normalizeDocMarkdown(page.content).trim() : '';
-  return {
-    tenantId: ctx.tenantId,
-    clickupDocId: ctx.docId,
-    clickupPageId: page.id,
-    title: page.name,
-    periodStart: ctx.periodStart,
-    periodEnd: ctx.periodEnd,
-    summaryMd: summaryMd || null,
-    committedCount: counts?.committed ?? null,
-    deliveredCount: counts?.delivered ?? null,
-    publishedAt: `${ctx.periodEnd}T00:00:00.000Z`,
-  };
-}
-
-/**
- * Order the report pages oldest-first and give each one a period.
- *
- * A report covers the ground since the previous one, so `periodStart` is the day
- * after the previous report's date. The first report in the series has no
- * predecessor — it falls back to a 14-day window, the cadence the series
- * actually runs at (08 Mar → 22 Mar → 05 Apr → …).
- */
-export function deriveReportPeriods(
-  pages: ClickUpDocPage[],
-): Array<{ page: ClickUpDocPage; periodStart: string; periodEnd: string }> {
-  const parsed = pages
-    .map((page) => ({ page, meta: parseReportPageTitle(page.name) }))
-    .filter((p): p is { page: ClickUpDocPage; meta: { number: number; date: string } } => p.meta !== null)
-    .sort((a, b) => a.meta.date.localeCompare(b.meta.date) || a.meta.number - b.meta.number);
-
-  return parsed.map((p, i) => {
-    const previous = parsed[i - 1]?.meta.date;
-    return {
-      page: p.page,
-      periodStart: previous ? addDays(previous, 1) : addDays(p.meta.date, -13),
-      periodEnd: p.meta.date,
-    };
-  });
 }

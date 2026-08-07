@@ -29,4 +29,48 @@ export const updateClientBody = z
   })
   .refine((b) => Object.keys(b).length > 0, { message: 'No fields to update' });
 
+// --- Members of one client's account ---
+
+/**
+ * The roles that mean something *inside* one client's account.
+ *
+ * `super_admin` is deliberately absent. It is platform-wide Aidapt staff
+ * access (it also sets `profiles.is_platform_admin` at registration), which is
+ * a categorically heavier grant than "add this person to this client" — so it
+ * is not reachable from anything scoped to a single tenant. Granting it stays
+ * on `POST /admin/clients/:id/invitations`, whose own validator still allows
+ * it as the one deliberate path.
+ */
+export const TENANT_ROLES = ['member', 'member_plus', 'member_pro', 'org_admin'] as const;
+
+/**
+ * A role a tenant-scoped endpoint may set. Rejects `super_admin` by name
+ * first, so the caller gets "that's the wrong endpoint" rather than a generic
+ * "invalid enum value" listing four roles and leaving them to infer why the
+ * fifth one they know exists isn't there.
+ */
+const tenantScopedRole = z
+  .string()
+  .refine((role) => role !== 'super_admin', {
+    message:
+      'super_admin is platform-wide access, not a role within one client — use the invitations endpoint',
+  })
+  .pipe(z.enum(TENANT_ROLES));
+
+export const memberParams = tenantIdParam.extend({ userId: z.string().uuid() });
+
+export const updateMemberBody = z
+  .object({
+    role: tenantScopedRole.optional(),
+    // Mirrors `core.membership_status`. `suspended` is how access is revoked —
+    // deleting the row would erase the fact the membership ever existed.
+    status: z.enum(['invited', 'active', 'suspended']).optional(),
+  })
+  .refine((b) => b.role !== undefined || b.status !== undefined, {
+    message: 'Provide a role, a status, or both',
+  });
+
 export type RegisterClientBody = z.infer<typeof registerClientBody>;
+export type TenantRole = (typeof TENANT_ROLES)[number];
+export type UpdateMemberBody = z.infer<typeof updateMemberBody>;
+export type MembershipStatus = NonNullable<UpdateMemberBody['status']>;

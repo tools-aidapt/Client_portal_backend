@@ -1,17 +1,22 @@
-import { ClickUpClient, DOC_PARENT, flattenDocPages, type ClickUpTask } from '@infra/clickup/client.js';
+import {
+  ClickUpClient,
+  partitionReportPages,
+  type ClickUpDoc,
+  type ClickUpTask,
+} from '@infra/clickup/client.js';
 import { AppError } from '@common/errors/index.js';
 import { logger } from '@infra/logger/index.js';
+import { withTransaction } from '@infra/db/pool.js';
 import { wishlistRepo } from '@modules/wishlist/wishlist.repository.js';
 import { syncRepo } from './sync.repository.js';
 import {
-  deriveReportPeriods,
   extractClientGroup,
   isProjectList,
   mapClickUpTask,
-  mapReportPage,
   type TaskBucket,
   type TaskSource,
 } from './mapper.js';
+import { mapReportDoc, mapReportSection, parseReportPeriod } from './report-mapper.js';
 import { mapCaseStudyTask, shortListName } from './usecase-mapper.js';
 import { mapWishlistTask } from './wishlist-mapper.js';
 
@@ -20,6 +25,8 @@ export interface SyncResult {
   upserted: number;
   skipped: number;
   status: 'success' | 'partial' | 'error';
+  /** Notifications emitted by this run. Only the report sync sets it. */
+  notified?: number;
 }
 
 /** Parse a leading sprint number out of a list name like "Sprint 5 (7/13 - 7/26)". */
@@ -388,64 +395,166 @@ export const syncService = {
   },
 
   /**
-   * Sync a client's bi-weekly status reports into portal.reports.
+   * Sync monthly client reports from ClickUp Docs into portal.reports.
    *
-   * The source is a ClickUp **Doc**, not a task list: each client's Project Pack
-   * (e.g. "KEN - RET - DOS - Project Pack", doc 8ckbtec-180492) has a
-   * "Project Updates" section whose child pages are the reports —
-   * "Report 9: Bi-Monthly Status Report - 02 July 2026" and so on, one every
-   * ~14 days.
+   * The source is a ClickUp **Doc**, not a task list. Each client has its own
+   * "Monthly Progress Reports" FOLDER in Delivery holding one Doc per month
+   * ("KEN - Report - JULY 2026"). That Doc's top-level page is the report body;
+   * its child pages are the pillar deep-dives — AI Operations, Intelligence,
+   * Enablement — which become `portal.report_sections` rows.
    *
-   * Routing follows the **per-folder-owns-a-tenant** pattern (as `ingestProject`
-   * does), not Client Group: the Doc is tenant-specific, so its own parent
-   * resolves the tenant — a list parent via its project mapping, a folder parent
-   * via `tenants.clickup_folder_id`. There is no Client Group field on a Doc.
+   * Routing is by FOLDER, from `core.tenants.clickup_reports_folder_id`. It
+   * cannot use the folder NAME (all five are literally called "Monthly Progress
+   * Reports") nor `doc.parent` against `clickup_folder_id` (the reports folder
+   * is a SIBLING of the client folder, not the client folder itself), nor the
+   * Client Group field (Docs have no custom fields).
    *
-   * Pages that aren't reports are skipped (counted): the Handbook templates, and
-   * the "Internal Status Briefing" nested under Report 3 — internal, not for a
-   * client portal.
+   * With no arguments this walks every mapped tenant; `tenantId` / `docId`
+   * narrow it for a one-off re-pull.
    */
-  async syncReports(docId: string, tenantIdOverride?: string): Promise<SyncResult & { tenantId: string | null }> {
-    const runId = await syncRepo.startRun('reports', tenantIdOverride ?? null);
+  async syncReports(
+    opts: { tenantId?: string; docId?: string } = {},
+  ): Promise<SyncResult & { tenants: number; docs: number; notified: number }> {
+    const runId = await syncRepo.startRun('reports', opts.tenantId ?? null);
     try {
       const client = new ClickUpClient();
-      const doc = await client.getDoc(docId);
+      const tenants = await syncRepo.listReportsFolderTenants(opts.tenantId);
+      if (tenants.length === 0) {
+        throw new AppError(
+          opts.tenantId
+            ? 'Tenant has no clickup_reports_folder_id set'
+            : 'No tenant has a reports folder mapped',
+          400,
+          'NO_REPORTS_FOLDER',
+        );
+      }
 
-      let tenantId = tenantIdOverride ?? null;
-      if (!tenantId && doc.parent) {
-        if (doc.parent.type === DOC_PARENT.list) {
-          tenantId = await syncRepo.resolveTenantByListId(doc.parent.id);
-        } else if (doc.parent.type === DOC_PARENT.folder) {
-          tenantId = await syncRepo.resolveTenantByFolderId(doc.parent.id);
+      let upserted = 0;
+      let skipped = 0;
+      let notified = 0;
+      let docCount = 0;
+      const problems: string[] = [];
+
+      for (const tenant of tenants) {
+        let docs;
+        try {
+          docs = await client.listFolderDocs(tenant.folderId);
+        } catch (err) {
+          // One unreachable folder must not starve the other tenants.
+          problems.push(`${tenant.name}: folder ${tenant.folderId} unreadable`);
+          logger.error({ tenant: tenant.name, err }, 'Report folder listing failed');
+          continue;
+        }
+        if (opts.docId) docs = docs.filter((d) => d.id === opts.docId);
+
+        const seenDocIds: string[] = [];
+        let tenantFailures = 0;
+
+        for (const doc of docs) {
+          docCount++;
+          try {
+            const result = await this.syncReportDoc(tenant.id, doc);
+            if (result.synced) {
+              upserted++;
+              seenDocIds.push(doc.id);
+            } else {
+              skipped++;
+              problems.push(`${doc.name || doc.id}: ${result.reason}`);
+            }
+          } catch (err) {
+            tenantFailures++;
+            const detail = err instanceof Error ? err.message : String(err);
+            problems.push(`${doc.name || doc.id}: ${detail}`);
+            logger.error({ docId: doc.id, err }, 'Report doc sync failed');
+          }
+        }
+
+        // Only retire against a listing we actually trust: after a failed fetch
+        // this would archive every report the broken call did not return.
+        if (seenDocIds.length > 0 && tenantFailures === 0) {
+          await syncRepo.retireMissingSyncedReports(tenant.id, seenDocIds);
+        }
+
+        // An admin-published portal-native report outranks the sync; overriding
+        // it here would ping-pong the two on every run.
+        if (!(await syncRepo.hasNativePublishedReport(tenant.id))) {
+          await syncRepo.archiveSupersededSyncedReports(tenant.id);
+          // AFTER the archive step, so this reads the one report that is really
+          // still published rather than announcing a superseded month.
+          notified += await syncRepo.notifyPublishedReport(tenant.id);
         }
       }
-      if (!tenantId) {
-        throw new AppError(
-          `Doc ${docId} does not resolve to a tenant — map its parent list/folder first`,
-          400,
-          'NO_TENANT',
-        );
-      }
 
-      const pages = flattenDocPages(await client.getDocPages(docId));
-      const periods = deriveReportPeriods(pages);
-      for (const { page, periodStart, periodEnd } of periods) {
-        await syncRepo.upsertReportFromDoc(
-          mapReportPage(page, { tenantId, docId, periodStart, periodEnd }),
-        );
-      }
-      const upserted = periods.length;
-      const skipped = pages.length - upserted;
-      await syncRepo.archiveSupersededSyncedReports(tenantId, docId);
-
-      await syncRepo.finishRun(runId, 'success', upserted, skipped ? `${skipped} non-report pages` : undefined);
-      logger.info({ docId, tenantId, upserted, skipped }, 'Report doc sync complete');
-      return { runId, upserted, skipped, status: 'success', tenantId };
+      const status = problems.length > 0 ? 'partial' : 'success';
+      await syncRepo.finishRun(runId, status, upserted, problems.join('; ') || undefined);
+      logger.info(
+        { tenants: tenants.length, docs: docCount, upserted, skipped, notified },
+        'Monthly report sync complete',
+      );
+      return { runId, upserted, skipped, notified, status, tenants: tenants.length, docs: docCount };
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       await syncRepo.finishRun(runId, 'error', 0, detail);
       throw err;
     }
+  },
+
+  /**
+   * One monthly Doc -> one report plus its sections, in a single transaction.
+   *
+   * Transactional because a client must never see a report whose sections are
+   * half-written; advisory-locked on the doc id because n8n retries overlap and
+   * two concurrent runs would race on the orphan-section delete.
+   */
+  async syncReportDoc(
+    tenantId: string,
+    doc: ClickUpDoc,
+  ): Promise<{ synced: true; reportId: string } | { synced: false; reason: string }> {
+    const client = new ClickUpClient();
+    const pages = await client.getDocPages(doc.id);
+    const { root, sections: sectionPages, extraRoots, orphans } = partitionReportPages(pages);
+
+    const period = parseReportPeriod({
+      rootContent: root?.content,
+      docName: doc.name,
+      rootPageName: root?.name,
+    });
+    // Never guess a month: a report filed under the wrong period is worse than
+    // one the sync refuses and names in sync_runs.
+    if (!period) return { synced: false, reason: 'no parseable report period' };
+
+    if (extraRoots.length || orphans.length) {
+      logger.warn(
+        { docId: doc.id, extraRoots: extraRoots.map((p) => p.id), orphans: orphans.map((p) => p.id) },
+        'Report doc has pages outside the expected root/pillar shape',
+      );
+    }
+
+    const sections = sectionPages.map((page, i) => mapReportSection(page, i));
+    const report = mapReportDoc({ tenantId, doc, rootPage: root, period, sections });
+
+    const reportId = await withTransaction(async (tx) => {
+      await tx.query('select pg_advisory_xact_lock(hashtext($1))', [doc.id]);
+      const id = await syncRepo.upsertReportFromDoc(tx, report);
+      for (const section of sections) {
+        await syncRepo.upsertReportSection(tx, id, tenantId, section);
+      }
+      await syncRepo.deleteOrphanSections(tx, id, sections.map((s) => s.clickupPageId));
+      return id;
+    });
+
+    logger.info(
+      {
+        docId: doc.id,
+        reportId,
+        period: `${period.start}..${period.end}`,
+        periodSource: period.source,
+        sections: sections.length,
+        status: report.status,
+      },
+      'Report doc synced',
+    );
+    return { synced: true, reportId };
   },
 
   /**

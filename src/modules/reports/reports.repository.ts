@@ -12,26 +12,62 @@ export interface CreateDraftInput {
 }
 
 export const reportsRepo = {
-  /** Published + archived reports for a tenant (clients never see drafts). */
+  /**
+   * Published + archived reports for a tenant (clients never see drafts).
+   *
+   * `pillars` lets the list show what a month covered without shipping three
+   * pillar bodies per row. The `created_at, id` tiebreak is not cosmetic: a
+   * client can hold two Docs for the same month (a duplicate left in ClickUp),
+   * and on equal `published_at`/`period_end` the order would otherwise flip
+   * between requests.
+   */
   async listForClient(tenantId: string): Promise<Array<Record<string, unknown>>> {
     const { rows } = await pool.query(
-      `select id, sprint_id, title, period_start, period_end,
-              committed_count, delivered_count, status, published_at
-         from portal.reports
-        where tenant_id = $1 and status in ('published','archived')
-        order by published_at desc nulls last, period_end desc`,
+      `select r.id, r.sprint_id, r.title, r.period_start, r.period_end,
+              r.committed_count, r.delivered_count, r.status, r.published_at,
+              coalesce(s.pillars, '{}') as pillars,
+              coalesce(s.section_count, 0) as section_count
+         from portal.reports r
+         left join lateral (
+           select array_agg(x.pillar_label order by x.sort_order) as pillars,
+                  count(*)::int as section_count
+             from portal.report_sections x where x.report_id = r.id
+         ) s on true
+        where r.tenant_id = $1 and r.status in ('published','archived')
+        order by r.published_at desc nulls last, r.period_end desc,
+                 r.created_at desc, r.id desc`,
       [tenantId],
     );
     return rows;
   },
 
-  /** One published/archived report for a tenant, plus the caller's own pulse. */
+  /**
+   * One published/archived report for a tenant, plus the caller's own pulse and
+   * its pillar sections.
+   *
+   * `summary_md` is only the Doc's ROOT page (Executive Summary, Pillar Status
+   * Snapshot, Consolidated Risks…) — the bulk of a monthly report lives in
+   * `sections`, so a caller that renders only `summary_md` silently drops most
+   * of it. Sections come back in the same round trip rather than an N+1, the
+   * same shape as the `my_pulse` subselect beside them.
+   */
   async getForClient(tenantId: string, id: string, userId: string): Promise<Record<string, unknown> | null> {
     const { rows } = await pool.query(
       `select r.id, r.sprint_id, r.title, r.period_start, r.period_end, r.summary_md,
               r.committed_count, r.delivered_count, r.status, r.published_at,
               (select jsonb_build_object('score', p.score, 'comment', p.comment)
-                 from portal.sprint_pulse p where p.report_id = r.id and p.user_id = $3) as my_pulse
+                 from portal.sprint_pulse p where p.report_id = r.id and p.user_id = $3) as my_pulse,
+              (select coalesce(jsonb_agg(jsonb_build_object(
+                        'id', s.id,
+                        'pillar', s.pillar,
+                        'pillar_label', s.pillar_label,
+                        'pillar_owner', s.pillar_owner,
+                        'subtitle', s.subtitle,
+                        'body_md', s.body_md,
+                        'committed_count', s.committed_count,
+                        'delivered_count', s.delivered_count
+                      ) order by s.sort_order), '[]'::jsonb)
+                 from portal.report_sections s where s.report_id = r.id) as sections
          from portal.reports r
         where r.id = $2 and r.tenant_id = $1 and r.status in ('published','archived')`,
       [tenantId, id, userId],
@@ -46,6 +82,15 @@ export const reportsRepo = {
       [id],
     );
     return (rows[0] as { id: string; tenant_id: string; sprint_id: string | null; status: string }) ?? null;
+  },
+
+  /** Tenant display name, for the PDF masthead. */
+  async getTenantName(tenantId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ name: string }>(
+      `select name from core.tenants where id = $1`,
+      [tenantId],
+    );
+    return rows[0]?.name ?? null;
   },
 
   async getSprintMeta(sprintId: string): Promise<{ name: string; starts_on: string | null; ends_on: string | null } | null> {

@@ -55,9 +55,16 @@ export const clientsController = {
     res.status(StatusCodes.CREATED).json(ok({ ...result, email, role }));
   },
 
-  /** Set the tenant's ClickUp folder + Client Group so sync can route its tasks. */
+  /**
+   * Set the tenant's ClickUp routing keys: the client folder and Client Group
+   * for tasks, and the "Monthly Progress Reports" folder for report Docs.
+   */
   async setClickupMapping(req: Request, res: Response): Promise<void> {
-    const body = req.body as { clickup_folder_id?: string; clickup_client_group?: string };
+    const body = req.body as {
+      clickup_folder_id?: string;
+      clickup_client_group?: string;
+      clickup_reports_folder_id?: string;
+    };
     const updated = await onboardingRepo.updateClickupMapping(req.params.id!, body);
     if (!updated) throw new NotFoundError('Tenant not found');
     res.status(StatusCodes.OK).json(ok(updated));

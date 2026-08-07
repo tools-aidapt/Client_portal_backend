@@ -276,15 +276,34 @@ A future admin UI can drive step 4 from a dropdown; nothing else needs to change
 
 ## Reports & feedback
 
-### `reports` — sprint reports, draft → published → archived
+### `reports` — monthly client reports, draft → published → archived
+
+One report is **one ClickUp Doc**: each client has its own "Monthly Progress
+Reports" folder in the Delivery space (`core.tenants.clickup_reports_folder_id`)
+holding one Doc per month. The Doc's root page is the report body; its child
+pages are the pillar deep-dives, stored in `report_sections`.
 
 | Column | Meaning | Why |
 |---|---|---|
-| `sprint_id` | Which sprint this reports on | Nullable — a report doesn't strictly have to tie to a tracked sprint |
-| `summary_md` | The report body, **raw markdown** | Not pre-rendered to HTML anywhere — the frontend currently just displays it as plain text, since no markdown renderer is wired up yet |
-| `committed_count`, `delivered_count` | The headline numbers | "Rolled" (shown on the Reports page) isn't stored at all — it's calculated on the fly as `committed - delivered` |
-| `status` | `draft` / `published` / `archived` | Clients only ever see `published` or `archived` — `draft` reports are invisible to them, enforced by the read query's `where` clause, not just the RLS policy |
-| `published_at`, `published_by` | When and by whom | — |
+| `clickup_doc_id` | The source Doc | The report's real identity — uniquely indexed (partial, so portal-native rows stay null). Keyed on the doc and not the root page because deleting and recreating that page in ClickUp changes the page id but not the doc id, which would otherwise insert a second report for the same month |
+| `clickup_page_id` | The Doc's root page | Kept for rebuilding the ClickUp URL, no longer the identity |
+| `doc_updated_at` | ClickUp's `date_updated` | The tiebreak that decides which report is "current" when two Docs share a `period_end` — Kenafric has a legacy duplicate for July 2026. Without it the current report alternates between sync runs and the notification guard re-fires every time |
+| `sprint_id` | Legacy link to a tracked sprint | Nullable, and always null on synced rows — reports are monthly now, not per sprint |
+| `summary_md` | The ROOT page body, **raw markdown** | Only the Executive Summary / Pillar Status Snapshot / Consolidated Risks — the bulk of a report lives in `report_sections`. The repeated `**Client:** / **Date:**` header block and the (broken-at-source) Deep-Dive Links section are stripped at ingest |
+| `committed_count`, `delivered_count` | The headline numbers | Summed from the pillar Action Item Trackers, since the root page has none. `null` rather than `0` when no pillar had a tracker — "nobody tracked anything" must not read as "everything came to zero". "Rolled" isn't stored at all; it's `committed - delivered` on the fly |
+| `status` | `draft` / `published` / `archived` | Clients only ever see `published` or `archived`, enforced by the read query's `where` clause as well as the RLS policy. An **empty Doc syncs as `draft`** so a client never sees a blank report, and promotes itself once someone writes it |
+| `published_at`, `published_by` | When and by whom | `published_at` is the period end (the month the report covers), not when ClickUp last touched the page. `published_by` is null on synced rows — they were published in ClickUp, not by an admin |
+
+### `report_sections` — one pillar deep-dive inside a monthly report
+
+| Column | Meaning | Why |
+|---|---|---|
+| `clickup_page_id` | The source Doc page | Globally unique. Sections are upserted on this rather than wiped and reinserted each run, so their uuids stay stable and a deleted ClickUp page is removed by an explicit orphan-delete |
+| `pillar` | `portal.capability` enum | Nullable — an unrecognised child page must not fail the whole sync |
+| `pillar_label` | Verbatim ClickUp page name | "AI Operations", not "operations": the client should read the source wording |
+| `pillar_owner` | Parsed from the page's `**Pillar Owner:**` line | — |
+| `committed_count`, `delivered_count` | This pillar's tracker | The per-pillar breakdown behind the report's summed headline numbers |
+| `tenant_id` | Denormalised from the parent report | Lets the RLS policy be the same one-liner as `reports_read` instead of a subquery; a composite FK on `(report_id, tenant_id)` stops it ever drifting from the parent |
 
 ### `sprint_pulse` — a client's 1-5 rating on one published report
 

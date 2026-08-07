@@ -20,6 +20,16 @@ export const reportsController = {
     res.status(StatusCodes.OK).json(ok(await reportsService.getForClient(tenantId, req.params.id!, userId)));
   },
 
+  /** Streams the report as a PDF attachment, so the browser downloads it outright. */
+  async downloadPdf(req: Request, res: Response): Promise<void> {
+    const { tenantId, userId } = tenantCtx(req);
+    const { pdf, filename } = await reportsService.renderPdf(tenantId, req.params.id!, userId);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', String(pdf.length));
+    res.status(StatusCodes.OK).end(pdf);
+  },
+
   async pulse(req: Request, res: Response): Promise<void> {
     const { tenantId, userId } = tenantCtx(req);
     const { score, comment } = req.body as { score: number; comment?: string };

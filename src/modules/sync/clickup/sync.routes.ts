@@ -146,15 +146,16 @@ syncRoutes.post(
 );
 
 const reportsBody = z.object({
-  doc_id: z.string().min(1),
   tenant_id: z.string().uuid().optional(),
+  doc_id: z.string().min(1).optional(),
 });
 
 /**
- * Sync a client's bi-weekly status reports from their Project Pack ClickUp Doc
- * into portal.reports. The Doc is tenant-specific, so the tenant is resolved
- * from its parent list/folder; `tenant_id` overrides that when the parent isn't
- * mapped yet.
+ * Sync monthly client reports from ClickUp Docs into portal.reports.
+ *
+ * Post `{}` on a schedule: every tenant with a `clickup_reports_folder_id` is
+ * walked, and each Doc in that folder becomes one report plus its pillar
+ * sections. `tenant_id` / `doc_id` narrow it for a one-off re-pull.
  */
 syncRoutes.post(
   '/reports',
@@ -166,7 +167,10 @@ syncRoutes.post(
         .json(fail('CLICKUP_NOT_CONFIGURED', 'CLICKUP_API_TOKEN is not set'));
       return;
     }
-    const result = await syncService.syncReports(req.body.doc_id, req.body.tenant_id);
+    const result = await syncService.syncReports({
+      tenantId: req.body.tenant_id,
+      docId: req.body.doc_id,
+    });
     res.status(StatusCodes.OK).json(ok(result));
   }),
 );

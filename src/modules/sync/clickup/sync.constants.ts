@@ -33,3 +33,20 @@ export const PROCESS_LIST_ID = '901218190381';
  * has folder-level access only, so the folder id cannot be discovered at runtime.
  */
 export const CASE_STUDY_FOLDER_ID = '90129732418';
+
+/**
+ * Monthly report folders are deliberately NOT listed here.
+ *
+ * Each client has its own "Monthly Progress Reports" folder in the Delivery
+ * space (ABL `901212877810`, TRO `901212877735`, JFX `901212877721`,
+ * KEN `901212877607`, TCC `901212877707` as of 2026-08-07), holding one Doc per
+ * month. Unlike the shared lists above, these are per-tenant, so the mapping
+ * belongs to the tenant: `core.tenants.clickup_reports_folder_id`, set through
+ * `PUT /admin/clients/:id/clickup-mapping`. Hardcoding them here as well would
+ * be a second source of truth that silently disagrees the first time a client is
+ * added or a folder is moved.
+ *
+ * Note the folders are SIBLINGS of the client folders, not children — ClickUp
+ * cannot nest folders — and all five carry the identical name, so neither the
+ * folder name nor `clickup_folder_id` can route a Doc to a tenant.
+ */

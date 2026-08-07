@@ -50,6 +50,15 @@ reportsRoutes.get('/', proOnly, asyncHandler(reportsController.list));
 
 reportsRoutes.get('/:id', proOnly, validate({ params: idParam }), asyncHandler(reportsController.get));
 
+// Before /:id would be fine either way (distinct paths), but keeping the PDF
+// route beside the detail it derives from keeps the file readable.
+reportsRoutes.get(
+  '/:id/pdf',
+  proOnly,
+  validate({ params: idParam }),
+  asyncHandler(reportsController.downloadPdf),
+);
+
 reportsRoutes.post(
   '/:id/pulse',
   proOnly,

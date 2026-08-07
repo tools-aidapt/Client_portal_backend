@@ -1,0 +1,34 @@
+-- ============================================================================
+-- 0028  Pod members carry their own booking link
+-- ----------------------------------------------------------------------------
+-- "Book a call" on the Dashboard was a local-state form: hardcoded time slots,
+-- no API call, no row written anywhere. It fired a toast saying the call was
+-- booked and nothing ever reached Aidapt. A client believing a call is
+-- scheduled when it is not is worse than an obviously dead button, so the
+-- booking now hands off to the Pod member's own scheduling page.
+--
+-- Why per member rather than per tenant: the client picks WHO they want to
+-- meet, and availability belongs to that person. `VITE_CAL_LINK` in the
+-- frontend was one personal Cal.com link shared by every client and every
+-- role, which cannot express "book the Pod Lead" vs "book the AI Engineer".
+-- That env var stays where it is for now — the Use Cases page's
+-- "Talk to your Pod" modal still uses it as a generic fallback.
+--
+-- Nullable, and null is the normal case: a member with no link set simply
+-- cannot be booked, and the UI must omit them rather than invent a
+-- destination. Kenafric's three rows are still the auto-seeded
+-- `display_name = 'To be assigned'`, `is_active = false` placeholders, so
+-- nothing here is populated until a pod is actually staffed.
+--
+-- NOTE: there is still no admin write path for `portal.pod_members` at all —
+-- the only insert in the codebase is the onboarding seed. Staffing a pod and
+-- setting these URLs both require direct SQL today.
+--
+-- Deliberately NOT a scheduling system: we store a URL and nothing else. No
+-- slots, no availability, no confirmed-booking record. If a portal-side record
+-- of bookings is wanted later, that is a Cal.com webhook writing its own
+-- table, not columns bolted on here.
+-- ============================================================================
+
+alter table portal.pod_members
+  add column if not exists booking_url text;

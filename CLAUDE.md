@@ -111,10 +111,16 @@ email is registered, to avoid leaking account existence.
     link survives every re-sync. Full chain verified over HTTP against live Kenafric data.
 - [x] **6. Reports + Sprint Pulse** — admin create(seeded from sprint)/publish,
   MemberPro list/detail/pulse.
-  - [x] **Reports sync from ClickUp Docs** — `POST /internal/sync/reports`
-    `{doc_id, tenant_id?}`. Source is the client's Project Pack **Doc**, not a
-    task list: its "Project Updates" child pages are the bi-weekly reports.
-    Kenafric is live from doc `8ckbtec-180492` (9 reports, Mar–Jul 2026).
+  - [x] **Monthly reports sync from ClickUp Docs** (migrations `0029`/`0030`) —
+    `POST /internal/sync/reports` with `{}` walks every tenant that has a
+    `clickup_reports_folder_id`. Source is a **Doc**, not a task list: each
+    client has its own "Monthly Progress Reports" folder in Delivery holding one
+    Doc per month, whose root page is the report body and whose child pages are
+    the pillar deep-dives → `portal.report_sections` (AI Operations /
+    Intelligence / Enablement; clients carry 2 or 3). Report-level
+    committed/delivered is the SUM of the pillar Action Item Trackers.
+    Kenafric is live from folder `901212877607`. `0030` deleted the nine
+    bi-weekly rows that came from the retired doc `8ckbtec-180492`.
 - [x] **Invitations** — invitation-gated registration + n8n invite email (LIVE).
   Inviter sets the role. Platform admin (`POST /admin/clients/:id/invitations`) can
   grant any role incl. `super_admin` (→ sets `is_platform_admin`). Org admin/member_pro
@@ -122,8 +128,53 @@ email is registered, to avoid leaking account existence.
   `POST /auth/register` needs the token + collects profile (fullName, jobTitle,
   department, phone, avatarUrl, interests[]). `PATCH /auth/me` edits profile.
   Profile fields added in migration `0015`.
+  - [x] **Member management** (2026-08-07) — `GET /admin/clients/:id/members` and
+    `PATCH /admin/clients/:id/members/:userId` `{ role?, status? }`. Before this
+    there was no way to *see* a client's users or change anyone's role/status
+    except direct SQL; invitations were the only member-related endpoint.
+    The PATCH is tenant-scoped in both directions: the role enum excludes
+    `super_admin` (rejected **by name**, 422 — platform-wide access is not a
+    per-client action, `/invitations` remains the one deliberate path), and the
+    update is keyed on the `(tenant_id, user_id)` pair, so addressing another
+    client's member 404s instead of editing them. Omitted fields `coalesce` to
+    their current value, so a role-only patch can't reset a status.
+    `core.user_credentials` is LEFT-joined — `Sprint Check` on Kenafric has a
+    profile and a membership but no credentials row, and an inner join would
+    silently drop that person from their own client's member list.
+    Frontend: `/admin/users` behind `AdminGate` (its first real use), reading the
+    tenant from the topbar picker. Verified live: `scripts/smoke-members.ts`,
+    22/22 checks against real Kenafric data, values restored afterwards.
 - [ ] **7. Notifications** — table + reads done; most sources already emit
   (onboarding, voting, reports). Remaining: wire remaining event sources as built.
+  - [x] **The report sync now notifies too.** `reportsRepo.publish` was the only
+    `report_published` emitter, so reports arriving via `/internal/sync/reports`
+    (all 9 of Kenafric's, `published_by = null`) produced nothing and the
+    Dashboard's "Recent activity" panel was empty despite a published report and
+    an active member_pro user. `syncRepo.notifyPublishedReport(tenantId)`
+    runs at the end of `syncReports`, **after** `archiveSupersededSyncedReports`
+    so it announces only the ONE still-published report rather than firing one
+    notification per backfilled month. Both are TENANT-scoped and must ORDER BY
+    the same `period_end desc, doc_updated_at desc nulls last, clickup_doc_id
+    desc` — see the tiebreak note under gotchas. Idempotent with no new column: the
+    `not exists` guard keys on the report's own `/reports/:id` `link_url`, so
+    re-syncs insert nothing and it dedupes against `reportsRepo.publish` too
+    (both write the same link). It therefore also **backfills** reports synced
+    before it existed. Gated to `member_pro`, who are the only ones who can read
+    Reports at all. `SyncResult.notified` reports the count. Verified live
+    (`scripts/smoke-report-notify.ts`): 1 → 0 → 0 across three calls, then a
+    real `syncReports` run returned `upserted: 9, notified: 0`.
+  - Five enum values still have NO emitter: `task_status_changed`,
+    `document_added`, `course_assigned`, `ticket_updated`, `role_changed`.
+    `task_status_changed` is the highest-value one left — the sync already knows
+    a task's previous `bucket`, so it could emit on change and give the activity
+    panel real volume from the 341 cached delivery tasks.
+  - **`core.notifications` is a per-USER inbox, not a tenant activity log.** Rows
+    carry `user_id`, so two people at the same client see different feeds and
+    anyone registering later sees an empty panel forever (nothing backfills at
+    registration). `core.audit_log` is the right shape for a tenant-wide stream
+    (`tenant_id, actor_id, action, target, metadata, created_at`) but is written
+    for only two actions — `invitation.registered` and `onboarding.completed` —
+    and Kenafric has exactly 1 row. Flagged, not reconciled.
 - [ ] **8. LMS/Support summary refresh** — LMS tile is live via join; Support reads
   `support.tenant_support_summary`. `/lms|support/internal/refresh-summary` not built.
 - [x] **9. Automation health** — admin `POST /admin/clients/:id/automations` (register
@@ -196,6 +247,75 @@ STUBBED (log-only, need real integration):
 - Voting winner **ClickUp write-back** (`voting.service.ts`).
 
 ## Known findings / gotchas
+- **NOTHING DRAINS THE OUTBOX, so every queued email silently never sends.**
+  Confirmed 2026-08-07: no `npm run worker:outbox` process was running, and no
+  n8n workflow calls `POST /internal/outbox/drain` (the two Portal workflows —
+  `Client Portal Emails` and `My workflow 40` — are the invite and OTP *webhook
+  receivers*, i.e. the far end, not the trigger). A real invite created via
+  `POST /admin/clients/:id/invitations` sat `status = 'pending'` indefinitely
+  with **no error surfaced anywhere**: the HTTP call returns `201`, the
+  `core.invitations` row is written, and the UI shows success — the email just
+  never leaves. Draining once by hand immediately delivered it (n8n execution
+  `48669`, Outlook `{"success": true}`), so the pipeline itself is sound; only
+  the pump is missing. Whoever puts this in production must run the worker or
+  schedule the drain. Note the drain is **global**, not per-tenant: one call
+  flushes every pending event, including other people's queued invites.
+- **`PORTAL_BASE_URL` is set to `http://localhost:5173`, so live invite emails
+  carry a link nobody but this machine can open.** The invite genuinely sent on
+  2026-08-07 contained
+  `http://localhost:5173/register?token=…`. Everything else about the email is
+  correct (recipient, tenant name, role, real token, 14-day expiry) — the base
+  URL is the only thing standing between this and a working client invite, and
+  it needs a real public origin in `.env` before anyone invites a client.
+- **The Sprint Line is scoped by DUE DATE, not by `task_cache.sprint_id`.**
+  `portalRepo.sprintTasks` used to filter `source = 'sprint' and sprint_id = $2`
+  and returned **zero rows for every tenant, every sprint** — the Dashboard showed
+  "In sprint: 00" against a real active sprint. That predicate needs each task
+  duplicated onto a per-sprint ClickUp list and routed by "Client Group", and no
+  such list is ever populated in this workspace (Kenafric's only two
+  `source = 'sprint'` rows are `client_visible = false`). A "Sprint Number" custom
+  field was checked as an alternative and is unset on every delivery task. So the
+  signature is now `sprintTasks(tenantId, startsOn, endsOn)`, selecting
+  `source = 'delivery'` tasks whose `due_date` falls in the active sprint's
+  inclusive window, and `portalService.sprintActive` passes
+  `sprint.starts_on`/`ends_on`. Returns `[]` if either date is null — an unbounded
+  range would return the tenant's whole backlog as "this sprint". Live: 0 rows
+  before, **10** after. `source`/`sprint_id` on `task_cache` are untouched.
+  - **node-postgres returns `date` columns as JS `Date`s**, so `activeSprint()`
+    hands over Dates despite its own (pre-existing, inaccurate) `string | null`
+    annotation — `reportsRepo.getSprintMeta` has the same wrong annotation. The
+    bounds are typed `string | Date` and the SQL casts `$2::date`/`$3::date`, so a
+    local-midnight Date can't be shifted a day by the server timezone. Verified
+    against the live DB: server `UTC`, client `UTC+5`, bounds still resolve to
+    2026-07-26 / 2026-08-09. `scripts/smoke-sprint-line.ts`.
+- **The sprint health badge is decorative, not real.** The frontend's
+  `sprintHealth()` derives At risk / Needs attention / On track from each task's
+  `rag`, but `rag` is unset on **all 341** of Kenafric's visible delivery tasks,
+  so it always falls through to a green "On track" and will stay green however bad
+  the sprint gets. Meanwhile **39** tasks are genuinely past due. Overdue count is
+  the honest signal; `rag` only gets filled in on the Onboarding/Offboarding lists.
+- **`portal.pod_members` has no admin write path at all.** The only insert in the
+  codebase is `onboarding.repository.ts` seeding three
+  `display_name = 'To be assigned'`, `is_active = false` placeholders, and `/pod`
+  filters `is_active = true` — so a freshly-onboarded client's Pod page is
+  correctly empty and can only be staffed by direct SQL. The table is also
+  deliberately flat: no `user_id`, no FK to `core.profiles`, no email, so the same
+  Aidapt person on five clients is five unrelated free-text rows.
+- **"Book a call" used to lie.** It was a local-state form with a hardcoded slot
+  list that made no API call and wrote nothing anywhere, then toasted "Call with X
+  booked for …" — a client believed a call was scheduled and no request ever
+  reached Aidapt. It now hands off to the member's own scheduling page via
+  `portal.pod_members.booking_url` (migration `0028`), null-safe: a member with no
+  link is shown as "No calendar yet" rather than falling back to someone else's.
+  Deliberately NOT a scheduling system — no slots, availability, or booking
+  record. `VITE_CAL_LINK` is unrelated and still one personal Cal.com link shared
+  by every client, used only by the Use Cases page's "Talk to your Pod" modal.
+- **Four Kenafric delivery tasks have `bucket = null`** because `in client review`
+  (2) and `internal review` (2) are in neither the global nor Kenafric's
+  `clickup_status_map`. They vanish from `deliveryCounts` and render with no
+  bucket in the Sprint Line — the same silent-disappearance failure as the `live`
+  status before it. Two global rows would fix it; not written yet because the
+  target bucket is a product call.
 - **`POST /internal/voting/close-cycle` is GLOBAL** — it closes due cycles for
   every tenant. Curling it at production to "just fix one client" touches them all.
   `votingService.closeCycle(cycleId)` and the `/admin/clients/:id/voting/cycles/*`
@@ -203,13 +323,27 @@ STUBBED (log-only, need real integration):
   (`0 1 * * *`), not monthly: it's idempotent and a no-op on 29 days in 30, whereas
   a monthly job that fails once silently loses a month — which is exactly how
   Kenafric's cycle ended up six days overdue.
-- **5 of the 14 tasks on the shared wishlist list are mis-tagged
-  `Client Group = Allied Bank`** (`869dcrgtj`, `869dct5cg`, `869dctm3e`, `869dcwv2n`,
-  `869dha513`) but are plainly Aidapt-internal or JewelFX submissions. Harmless
-  today — no Allied Bank tenant exists, so they're skipped as unrouted — but they
-  become a **confidentiality leak the day one is onboarded**. A ClickUp data fix,
-  not a code fix. A 6th (`869e3v5yn`) has no Client Group at all and is correctly
-  counted as unrouted.
+- **5 wishlist tasks were mis-tagged `Client Group = Allied Bank` — FIXED 2026-08-07.**
+  `869dcrgtj`, `869dct5cg`, `869dctm3e`, `869dcwv2n`, `869dha513` are all
+  **Aidapt-internal test/demo submissions**, not client data. Reading each task's own
+  body settles it — and it contradicts the `Company` field, so do NOT trust that field:
+  `869dcrgtj` says Company `jewel` but the submitter email is `m.rehman@aidapt.co`;
+  `869dha513` says `JFX` but the email is `sdva@jfx.com`, the same placeholder shape as
+  `sdva@abl.com`, with keyboard-mash answers (`sgsdg` / `efwf` / `ewrgtewrgwer`);
+  `869dcwv2n` is a fabricated persona ("Layla Nasser", 40 stores, Dubai Marina) sent
+  from `m.rehman@aidapt.co`. **Retagging them to JewelFX would have been wrong** — it
+  would push junk into a real client's Wishlist. All five were set to
+  `Client Group = Aidapt` (option `6c790286-c97a-40e4-97f5-4849274ee9a0`), which has no
+  tenant, so they are now correctly counted as unrouted.
+  - **Deleting the cached rows was still required, and is the general lesson.**
+    `syncWishlist` does `if (!tenantId) { skipped++; continue; }` — an unrouted task is
+    skipped, never deleted — so re-tagging alone does NOT retract a row already written
+    under the wrong tenant. Retagging moves a row only when the new group maps to a real
+    tenant. The 5 stale `portal.wishlist_items` rows (all `candidate`, 0 votes) were
+    deleted explicitly; a re-sync then confirmed they stay gone
+    (`upserted: 5, skipped: 9`, Allied Bank left with only `869dhb45x`/`869dhb87u`).
+    **Any future Client-Group correction needs the same two steps.**
+  - A 6th (`869e3v5yn`) has no Client Group at all and is correctly counted as unrouted.
 - **Wishlist bodies are internal test data.** All three Kenafric submissions come
   from `@aidapt.co` addresses with placeholder text (one reads "Pain in the ass");
   "Kenafric - Website" has the literal word `None` in every answer, which the parser
@@ -277,31 +411,72 @@ STUBBED (log-only, need real integration):
   "Cross Department") — any future ingest must translate, never pass through.
 - **Never sync `Billed Value ($)`** (populated on 162 case studies). Commercials
   are confidential; `portal.use_cases` deliberately has no column for it.
-- **Reports come from a ClickUp Doc, and Docs are v3-only.** Every other sync
-  reads v2 task lists; `client.getDoc`/`getDocPages` hit `api/v3` and need
-  `CLICKUP_TEAM_ID` (the v2 routes don't). Docs route to a tenant by their own
-  `parent` (type 5 = folder, 6 = list) — there is no "Client Group" custom field
-  on a Doc, so the shared-list/Client-Group pattern does not apply here.
-  Doc search by `parent_id=<folder>` does **not** recurse into the folder's
-  lists, which is where the Kenafric pack actually sits (list 901218118508).
-- **Report period starts are derived, not sourced.** A report page states its
-  period only as prose ("Report Period: Weeks 18–19"), so `period_start` is the
-  day after the previous report's date (first report falls back to 14 days).
-  Likewise `published_at` is the report's own issue date, not the page's
-  `date_created` — Reports 1–5 were backfilled into the Doc in one batch and
-  all carry a ~19 May 2026 creation date.
+- **Reports come from ClickUp Docs, and Docs are v3-only.** Every other sync
+  reads v2 task lists; `client.listFolderDocs`/`getDocPages` hit `api/v3` and
+  need `CLICKUP_TEAM_ID` (the v2 routes don't). Docs have no custom fields, so
+  the shared-list/Client-Group pattern cannot apply.
+- **The reports folder is a SIBLING of the client folder, not inside it.**
+  ClickUp cannot nest folders, so each client's "Monthly Progress Reports"
+  folder sits beside its client folder in Delivery — and all five carry the
+  identical name. Neither the folder name nor `tenants.clickup_folder_id` can
+  therefore route a Doc; `tenants.clickup_reports_folder_id` (migration `0029`)
+  is the mapping, and the sync enumerates docs FROM that folder rather than
+  reading `doc.parent`. A Doc search by `parent_id=<folder>` does not recurse
+  into the folder's lists either.
+- **One Doc = one report; the identity is `clickup_doc_id`, not the root page.**
+  Deleting and recreating a Doc's root page in ClickUp changes the page id but
+  not the doc id, so a page-keyed upsert would insert a SECOND report for the
+  same month. Sections are keyed on `clickup_page_id` and upserted (never
+  wiped-and-reinserted) so their uuids survive the hourly run, with an
+  orphan-delete for pages removed in ClickUp.
+- **The single-published tiebreak is load-bearing, not cosmetic.** Kenafric has
+  TWO Docs for July 2026 — a legacy duplicate (`8ckbtec-234592`, byte-identical
+  content) beside the real one (`8ckbtec-240992`) — with the same `period_end`.
+  `archiveSupersededSyncedReports` and `notifyPublishedReport` are both
+  tenant-scoped and MUST share the ordering `period_end desc, doc_updated_at
+  desc nulls last, clickup_doc_id desc`. Without a stable secondary key the
+  "current" report alternates between runs, and because the notification
+  idempotency guard keys on the report's own `/reports/:id` link, every flip
+  emits a fresh "new report published" — an hourly notification storm.
+- **An empty Doc syncs as a `draft`, not `published`.** Trojan's Doc
+  (`8ckbtec-241092`) has one page with an empty name and no content. The row is
+  still written so the sync stays traceable and idempotent, but a client never
+  sees a blank report, and it promotes itself once someone writes the Doc.
+- **Report periods are read, not derived** — unlike the retired bi-weekly series.
+  The root page states `**Report Period:** (01–31 July 2026)`, but the format
+  varies across clients: en dash (KEN), plain hyphen (ABL/TCC), and a
+  `Weeks 18 to 23 (01-31 July 2026)` prefix (JFX). `parseReportPeriod` prefers
+  the LAST parenthetical (so "18 to 23" can't be read as a day range) and strips
+  `Weeks N to M` phrases before matching. Fallback chain when the line is
+  missing: `**Date:**` → doc name (this is what dates Trojan's empty Doc) → root
+  page name (this is what dates the legacy Kenafric Doc, whose page name and doc
+  name disagree) → skip the Doc and name it in `sync_runs`. It never defaults to
+  today. `published_at` is the period end, not `date_created`.
+- **The root page and every pillar page repeat the same metadata block**
+  (`**Client:** / **Report Period:** / **Date:**`), so `stripHeaderBlock` drops
+  the leading `**Label:** value` run — otherwise a client reads it four times.
+  The italic `_Scope in this engagement…_` line is content and is kept.
+  `## Deep-Dive Links` is stripped too: those links are **broken at source**
+  (JFX's root points at doc `8ckbtec-239852` while its real pages are
+  `8ckbtec-220252`/`…272`; TCC's points at `8ckbtec-239812` — copy-paste
+  artefacts of duplicating a template) and the portal renders those pillars
+  inline anyway.
 - **ClickUp's markdown export drops the line breaks the Doc shows**, so the
   6-line report header renders as one run-on sentence (consecutive lines are a
   single paragraph joined by soft breaks). `normalizeDocMarkdown` re-adds hard
-  breaks (47 across the 9 Kenafric reports) and normalises CRLF→LF at ingest, so
-  `summary_md` is correct for any standard CommonMark/GFM renderer without the
-  frontend needing `breaks: true`. It skips structural lines and fenced code —
-  ClickUp already fences its pre-formatted content (Report 2's architecture
-  diagram), and breaking inside a fence would render literal trailing spaces.
-- The report **Action Item Tracker's columns move between reports** (Report 1 is
-  `# | Action Item | Owner | Status`; Report 9 adds `Source` and `Due`), so
+  breaks and normalises CRLF→LF at ingest, so bodies are correct for any
+  standard CommonMark/GFM renderer without the frontend needing `breaks: true`.
+  It skips structural lines and fenced code — ClickUp already fences its
+  pre-formatted content, and breaking inside a fence would render literal
+  trailing spaces.
+- The report **Action Item Tracker's columns move between pages** (some are
+  `# | Action Item | Owner | Status`, others add `Source` and `Due`), so
   `parseTrackerCounts` finds the status column by header name and scopes to the
-  tracker section — the Risks table further down also contains ✅.
+  tracker section — the Risks table further down also contains ✅. Only the
+  PILLAR pages carry a tracker; the root page has none, so report-level counts
+  are `sumTrackerCounts` over the sections. If no section had a tracker the
+  result is `null`, not `0` — "nobody tracked anything" must not render as
+  "everything came to zero".
 - **`/projects` is phase-shaped, not task-shaped.** The sync pulls subtasks
   (`subtasks=true`) and ClickUp nests them up to **3 deep** here, so a flat read
   showed a client 159 "tasks" for a 6-phase project. `portalRepo.projects` returns

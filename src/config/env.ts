@@ -52,6 +52,11 @@ const envSchema = z.object({
   // are addressed by list/folder id alone.
   CLICKUP_TEAM_ID: z.string().min(1).optional(),
 
+  // Chrome/Chromium used to render report PDFs. Set in the container (the Alpine
+  // `chromium` package); on a dev machine the common install paths are tried, so
+  // this only needs setting for a non-standard location.
+  PUPPETEER_EXECUTABLE_PATH: z.string().min(1).optional(),
+
   // Frontend base URL used to build invitation links (e.g. https://portal.aidapt.co).
   PORTAL_BASE_URL: z.string().url().optional(),
   // Public process-intake form the Onboarding page links out to. If unset the

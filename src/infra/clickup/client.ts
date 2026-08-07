@@ -75,11 +75,19 @@ export interface ClickUpDoc {
 export interface ClickUpDocPage {
   id: string;
   doc_id: string;
+  /** Absent on a Doc's top-level page(s); set on every child. */
   parent_page_id?: string;
   name: string;
   content?: string;
+  /** Free-text strapline under the page title. Report pillar pages carry one. */
+  sub_title?: string;
   date_created?: number;
   date_updated?: number;
+  /**
+   * NOT a reliable sort key — observed out of order against the real page
+   * sequence (a root page at 3, a second child at 2). Use array order.
+   */
+  order_index?: number;
   pages?: ClickUpDocPage[];
 }
 
@@ -193,6 +201,38 @@ export class ClickUpClient {
   }
 
   /**
+   * Every Doc filed directly under a folder.
+   *
+   * Reports live in per-client "Monthly Progress Reports" folders, so this is
+   * the entry point for the report sync. Deleted and archived Docs are excluded
+   * server-side — a Doc that came back from the dead would resurrect its report.
+   *
+   * `next_cursor` is both the request parameter and the response field, and
+   * comes back as an empty string (not null) when exhausted. Verified live.
+   */
+  async listFolderDocs(folderId: string): Promise<ClickUpDoc[]> {
+    const out: ClickUpDoc[] = [];
+    let cursor = '';
+    do {
+      const data = await this.get<{ docs?: ClickUpDoc[]; next_cursor?: string }>(
+        `/workspaces/${this.workspaceId}/docs`,
+        {
+          parent_id: folderId,
+          parent_type: String(DOC_PARENT.folder),
+          deleted: 'false',
+          archived: 'false',
+          limit: '100',
+          ...(cursor ? { next_cursor: cursor } : {}),
+        },
+        V3_BASE_URL,
+      );
+      out.push(...(data.docs ?? []));
+      cursor = data.next_cursor ?? '';
+    } while (cursor);
+    return out;
+  }
+
+  /**
    * Every page of a Doc, nested, with markdown content — one request, no
    * pagination. `max_page_depth=-1` means unlimited.
    */
@@ -205,7 +245,38 @@ export class ClickUpClient {
   }
 }
 
-/** Depth-first flatten of a Doc's nested page tree. */
+/** Depth-first flatten of a Doc's nested page tree. Parents precede children. */
 export function flattenDocPages(pages: ClickUpDocPage[]): ClickUpDocPage[] {
   return pages.flatMap((p) => [p, ...flattenDocPages(p.pages ?? [])]);
+}
+
+/**
+ * Split a report Doc's pages into the report body and its pillar sections.
+ *
+ * A monthly report Doc holds one top-level page (the report) whose children are
+ * the pillar deep-dives. Partitioning on `parent_page_id` rather than walking
+ * the nested tree means this still works if ClickUp ever returns a flat array.
+ *
+ * `extraRoots` and `orphans` are returned rather than dropped so the sync can
+ * count and log them: a Doc that quietly grew a second top-level page should
+ * show up as a partial run, not as a silently truncated report.
+ */
+export function partitionReportPages(pages: ClickUpDocPage[]): {
+  root: ClickUpDocPage | null;
+  sections: ClickUpDocPage[];
+  extraRoots: ClickUpDocPage[];
+  orphans: ClickUpDocPage[];
+} {
+  const flat = flattenDocPages(pages);
+  const tops = flat.filter((p) => !p.parent_page_id);
+  const root = tops[0] ?? null;
+  // Array order is document order; `order_index` is not dependable here.
+  const sections = root ? flat.filter((p) => p.parent_page_id === root.id) : [];
+  const claimed = new Set([...tops, ...sections].map((p) => p.id));
+  return {
+    root,
+    sections,
+    extraRoots: tops.slice(1),
+    orphans: flat.filter((p) => !claimed.has(p.id)),
+  };
 }

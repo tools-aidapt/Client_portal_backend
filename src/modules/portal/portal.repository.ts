@@ -214,9 +214,15 @@ export const portalRepo = {
     return rows;
   },
 
+  /**
+   * The Pod shown to a client. `booking_url` (migration 0028) is the member's
+   * own scheduling page and is null for anyone who hasn't got one — the client
+   * must then be offered no booking for that person rather than a made-up
+   * destination, which is what the old hardcoded-slots modal effectively did.
+   */
   async pod(tenantId: string): Promise<Array<Record<string, unknown>>> {
     const { rows } = await pool.query(
-      `select display_name, role_label, avatar_url, sort_order
+      `select display_name, role_label, avatar_url, sort_order, booking_url
          from portal.pod_members
         where tenant_id = $1 and is_active = true
         order by sort_order, display_name`,

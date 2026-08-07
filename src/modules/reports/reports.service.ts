@@ -1,5 +1,6 @@
 import { BadRequestError, ConflictError, NotFoundError } from '@common/errors/index.js';
 import { reportsRepo, type CreateDraftInput } from './reports.repository.js';
+import { renderReportPdf, reportPdfFilename, type ReportPdfInput } from './report-pdf.js';
 
 export interface CreateReportRequest {
   tenantId: string;
@@ -58,6 +59,19 @@ export const reportsService = {
       deliveredCount: deliveredCount ?? null,
     };
     return reportsRepo.createDraft(input);
+  },
+
+  /**
+   * The report as a PDF. Reuses `getForClient`, so the same tenant + status gate
+   * applies — a client can only export a report they are allowed to read.
+   */
+  async renderPdf(tenantId: string, id: string, userId: string) {
+    const report = (await this.getForClient(tenantId, id, userId)) as unknown as ReportPdfInput & {
+      tenantName?: string;
+    };
+    const tenantName = await reportsRepo.getTenantName(tenantId);
+    const pdf = await renderReportPdf({ ...report, tenantName: tenantName ?? 'Aidapt client' });
+    return { pdf, filename: reportPdfFilename(report.title) };
   },
 
   async publish(id: string, publishedBy: string) {

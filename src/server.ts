@@ -1,6 +1,7 @@
 import { app } from './app.js';
 import { config } from '@config/index.js';
 import { logger } from '@infra/logger/index.js';
+import { closePdfBrowser } from '@modules/reports/report-pdf.js';
 
 const server = app.listen(config.server.port, config.server.host, () => {
   logger.info(
@@ -13,7 +14,9 @@ function shutdown(signal: string): void {
   logger.info(`${signal} received, shutting down gracefully...`);
   server.close(() => {
     logger.info('HTTP server closed');
-    process.exit(0);
+    // The PDF export keeps one Chrome alive for the process; without this it
+    // outlives the container and the exit hangs on the orphan.
+    void closePdfBrowser().finally(() => process.exit(0));
   });
 
   // Force-exit if shutdown hangs.

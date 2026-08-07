@@ -1,5 +1,6 @@
-import { pool } from '@infra/db/pool.js';
-import type { ReportUpsert, TaskBucket, TaskCacheUpsert } from './mapper.js';
+import { pool, type Queryable } from '@infra/db/pool.js';
+import type { TaskBucket, TaskCacheUpsert } from './mapper.js';
+import type { ReportDocUpsert, ReportSectionUpsert } from './report-mapper.js';
 import type { UseCaseUpsert } from './usecase-mapper.js';
 
 export const syncRepo = {
@@ -319,33 +320,144 @@ export const syncRepo = {
   },
 
   /**
-   * Idempotent upsert of one report Doc page, keyed by clickup_page_id.
-   * Portal-native reports leave that column null (partial unique index,
-   * migration 0021) and are never touched by this. `published_by` stays null:
-   * these were published in ClickUp, not by a portal admin.
+   * Upsert one monthly report Doc, keyed by `clickup_doc_id`.
+   *
+   * Keyed on the DOC and not the root page: deleting and recreating a Doc's root
+   * page in ClickUp changes the page id but not the doc id, and a page-keyed
+   * upsert would insert a SECOND report for the same month instead of updating
+   * the one already there.
+   *
+   * `status` IS written, unlike the old bi-weekly upsert — an empty Doc has to
+   * be able to promote itself from draft to published once someone fills it in.
+   * `published_by` stays null: these are published in ClickUp, not by an admin.
+   * Portal-native reports leave `clickup_doc_id` null and are never touched.
    */
-  async upsertReportFromDoc(r: ReportUpsert): Promise<void> {
-    await pool.query(
+  async upsertReportFromDoc(client: Queryable, r: ReportDocUpsert): Promise<string> {
+    const { rows } = await client.query<{ id: string }>(
       `insert into portal.reports
          (tenant_id, clickup_doc_id, clickup_page_id, title, period_start, period_end,
-          summary_md, committed_count, delivered_count, status, published_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'published'::portal.report_status,$10)
-       on conflict (clickup_page_id) where clickup_page_id is not null
+          summary_md, committed_count, delivered_count, status, published_at,
+          doc_updated_at, synced_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::portal.report_status,$11,$12, now())
+       on conflict (clickup_doc_id) where clickup_doc_id is not null
        do update set
          tenant_id = excluded.tenant_id,
-         clickup_doc_id = excluded.clickup_doc_id,
+         clickup_page_id = excluded.clickup_page_id,
          title = excluded.title,
          period_start = excluded.period_start,
          period_end = excluded.period_end,
          summary_md = excluded.summary_md,
          committed_count = excluded.committed_count,
          delivered_count = excluded.delivered_count,
-         published_at = excluded.published_at`,
+         status = excluded.status,
+         published_at = excluded.published_at,
+         doc_updated_at = excluded.doc_updated_at,
+         synced_at = now()
+       returning id`,
       [
         r.tenantId, r.clickupDocId, r.clickupPageId, r.title, r.periodStart, r.periodEnd,
-        r.summaryMd, r.committedCount, r.deliveredCount, r.publishedAt,
+        r.summaryMd, r.committedCount, r.deliveredCount, r.status, r.publishedAt,
+        r.docUpdatedAt,
       ],
     );
+    return rows[0]!.id;
+  },
+
+  /** Upsert one pillar section, keyed by its ClickUp page id. */
+  async upsertReportSection(
+    client: Queryable,
+    reportId: string,
+    tenantId: string,
+    s: ReportSectionUpsert,
+  ): Promise<void> {
+    await client.query(
+      `insert into portal.report_sections
+         (report_id, tenant_id, clickup_page_id, pillar, pillar_label, pillar_owner,
+          subtitle, body_md, committed_count, delivered_count, sort_order, synced_at)
+       values ($1,$2,$3,$4::portal.capability,$5,$6,$7,$8,$9,$10,$11, now())
+       on conflict (clickup_page_id) do update set
+         report_id = excluded.report_id,
+         tenant_id = excluded.tenant_id,
+         pillar = excluded.pillar,
+         pillar_label = excluded.pillar_label,
+         pillar_owner = excluded.pillar_owner,
+         subtitle = excluded.subtitle,
+         body_md = excluded.body_md,
+         committed_count = excluded.committed_count,
+         delivered_count = excluded.delivered_count,
+         sort_order = excluded.sort_order,
+         synced_at = now()`,
+      [
+        reportId, tenantId, s.clickupPageId, s.pillar, s.pillarLabel, s.pillarOwner,
+        s.subtitle, s.bodyMd, s.committedCount, s.deliveredCount, s.sortOrder,
+      ],
+    );
+  },
+
+  /**
+   * Drop sections whose ClickUp page is gone from the Doc.
+   *
+   * Sections are upserted rather than wiped-and-reinserted so their uuids stay
+   * stable across the hourly run; this is the other half of that — a pillar page
+   * deleted in ClickUp has to stop being rendered.
+   */
+  async deleteOrphanSections(client: Queryable, reportId: string, keepPageIds: string[]): Promise<number> {
+    const { rowCount } = await client.query(
+      `delete from portal.report_sections
+        where report_id = $1 and clickup_page_id <> all($2::text[])`,
+      [reportId, keepPageIds],
+    );
+    return rowCount ?? 0;
+  },
+
+  /** Tenants with a Monthly Progress Reports folder mapped. */
+  async listReportsFolderTenants(
+    tenantId?: string,
+  ): Promise<Array<{ id: string; folderId: string; name: string }>> {
+    const { rows } = await pool.query<{ id: string; folder_id: string; name: string }>(
+      `select id, clickup_reports_folder_id as folder_id, name
+         from core.tenants
+        where clickup_reports_folder_id is not null
+          and ($1::uuid is null or id = $1::uuid)
+        order by name`,
+      [tenantId ?? null],
+    );
+    return rows.map((r) => ({ id: r.id, folderId: r.folder_id, name: r.name }));
+  },
+
+  /**
+   * Whether the tenant has a portal-native published report (created and
+   * published by an admin rather than synced). When one exists the sync leaves
+   * it alone instead of overriding it, which otherwise ping-pongs hourly:
+   * `reportsRepo.publish` archives the synced row, the next sync re-publishes it
+   * and archives the native one, forever.
+   */
+  async hasNativePublishedReport(tenantId: string): Promise<boolean> {
+    const { rows } = await pool.query(
+      `select 1 from portal.reports
+        where tenant_id = $1 and clickup_doc_id is null and status = 'published' limit 1`,
+      [tenantId],
+    );
+    return rows.length > 0;
+  },
+
+  /**
+   * Archive synced reports whose Doc has disappeared from the client's folder.
+   *
+   * Archived, never deleted — `portal.sprint_pulse` cascades, and a client's
+   * rating is not something a sync should be able to destroy. The caller only
+   * invokes this after a clean, non-empty listing: doing it after a partial
+   * fetch would retire every report the failed call didn't return.
+   */
+  async retireMissingSyncedReports(tenantId: string, seenDocIds: string[]): Promise<number> {
+    if (seenDocIds.length === 0) return 0;
+    const { rowCount } = await pool.query(
+      `update portal.reports set status = 'archived'
+        where tenant_id = $1 and clickup_doc_id is not null
+          and status <> 'archived' and clickup_doc_id <> all($2::text[])`,
+      [tenantId, seenDocIds],
+    );
+    return rowCount ?? 0;
   },
 
   /**
@@ -354,14 +466,85 @@ export const syncRepo = {
    * every older one is archived. Clients still see both — `listForClient`
    * returns published + archived — so nothing disappears. Scoped to synced rows
    * so a portal-native published report is left alone.
+   *
+   * Scoped to the TENANT, not to one Doc: a client now has one Doc per month, so
+   * per-doc scoping would leave every month simultaneously published.
+   *
+   * The `doc_updated_at` tiebreak is load-bearing. Kenafric currently has two
+   * Docs for July 2026 (a legacy duplicate alongside the real one) with the same
+   * `period_end`, and without a stable secondary sort the "current" report would
+   * alternate between runs — which, because `notifyPublishedReport` keys its
+   * idempotency guard on the report's own link, would fire a fresh notification
+   * on every single run.
+   *
+   * Never touches drafts, so an empty Doc stays hidden rather than being
+   * promoted by the sweep.
    */
-  async archiveSupersededSyncedReports(tenantId: string, docId: string): Promise<number> {
+  async archiveSupersededSyncedReports(tenantId: string): Promise<number> {
     const { rowCount } = await pool.query(
       `update portal.reports set status = 'archived'
-        where tenant_id = $1 and clickup_doc_id = $2 and status = 'published'
-          and period_end < (select max(period_end) from portal.reports
-                             where tenant_id = $1 and clickup_doc_id = $2)`,
-      [tenantId, docId],
+        where tenant_id = $1 and clickup_doc_id is not null and status = 'published'
+          and id <> (
+            select id from portal.reports
+             where tenant_id = $1 and clickup_doc_id is not null and status = 'published'
+             order by period_end desc, doc_updated_at desc nulls last, clickup_doc_id desc
+             limit 1)`,
+      [tenantId],
+    );
+    return rowCount ?? 0;
+  },
+
+  /**
+   * Notify a tenant's MemberPro users about their CURRENT published report.
+   *
+   * Reports that arrive by sync never produced a notification, so a client
+   * could have a published report and an empty activity feed: only
+   * `reportsRepo.publish` emits, and synced rows go in through
+   * `upsertReportFromDoc` instead (which is why all 9 of Kenafric's reports
+   * have `published_by = null`). This closes that gap for the sync path.
+   *
+   * Three properties make it safe to call on every sync run:
+   *
+   * - **Only the newest report notifies.** It reads the one row still
+   *   `published` after `archiveSupersededSyncedReports` has run, using the SAME
+   *   ordering — the two must agree, or this announces the report the other one
+   *   just archived. So a client's first-ever sync announces the latest month
+   *   once instead of firing one notification per backfilled month.
+   * - **Once per user per report, ever.** The `not exists` guard keys on the
+   *   report's own `link_url`, so a re-sync inserts nothing. That is what makes
+   *   it idempotent without a "notified_at" column, and it dedupes against
+   *   `reportsRepo.publish` too, since both paths write the same
+   *   `/reports/:id` link.
+   * - **It backfills.** A report that was synced before this existed still
+   *   notifies on the next run, because the guard finds no notification for it.
+   *
+   * MemberPro is the role gate because that is who can read Reports at all
+   * (`reportsRoutes`) — notifying a member who would get a 403 on the link is
+   * worse than staying quiet.
+   */
+  async notifyPublishedReport(tenantId: string): Promise<number> {
+    const { rows } = await pool.query<{ id: string }>(
+      `select id from portal.reports
+        where tenant_id = $1 and clickup_doc_id is not null and status = 'published'
+        order by period_end desc, doc_updated_at desc nulls last, clickup_doc_id desc
+        limit 1`,
+      [tenantId],
+    );
+    const report = rows[0];
+    if (!report) return 0;
+
+    const { rowCount } = await pool.query(
+      `insert into core.notifications (tenant_id, user_id, type, title, link_url)
+       select $1, m.user_id, 'report_published'::core.notification_type,
+              'A new report has been published', $2::text
+         from core.memberships m
+        where m.tenant_id = $1 and m.status = 'active' and m.role = 'member_pro'
+          and not exists (
+            select 1 from core.notifications n
+             where n.user_id = m.user_id and n.link_url = $2::text
+               and n.type = 'report_published'::core.notification_type
+          )`,
+      [tenantId, `/reports/${report.id}`],
     );
     return rowCount ?? 0;
   },

@@ -203,16 +203,27 @@ export const onboardingRepo = {
 
   async updateClickupMapping(
     tenantId: string,
-    fields: { clickup_folder_id?: string; clickup_client_group?: string },
+    fields: {
+      clickup_folder_id?: string;
+      clickup_client_group?: string;
+      clickup_reports_folder_id?: string;
+    },
   ): Promise<unknown | null> {
     const { rows } = await pool.query(
       `update core.tenants set
          clickup_folder_id = coalesce($2, clickup_folder_id),
          clickup_client_group = coalesce($3, clickup_client_group),
+         clickup_reports_folder_id = coalesce($4, clickup_reports_folder_id),
          updated_at = now()
        where id = $1
-       returning id, name, clickup_folder_id, clickup_client_group`,
-      [tenantId, fields.clickup_folder_id ?? null, fields.clickup_client_group ?? null],
+       returning id, name, clickup_folder_id, clickup_client_group,
+                 clickup_reports_folder_id`,
+      [
+        tenantId,
+        fields.clickup_folder_id ?? null,
+        fields.clickup_client_group ?? null,
+        fields.clickup_reports_folder_id ?? null,
+      ],
     );
     return rows[0] ?? null;
   },

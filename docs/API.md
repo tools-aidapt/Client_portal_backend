@@ -158,11 +158,19 @@ department / state / created_at`:
 ## Reports & Sprint Pulse
 | Method | Path | Role | Body |
 |---|---|---|---|
-| GET | `/reports` | member_pro | published + archived list |
-| GET | `/reports/:id` | member_pro | detail incl. `my_pulse` |
+| GET | `/reports` | member_pro | published + archived list, newest first. Each row adds `pillars` (e.g. `["AI Operations","Intelligence","Enablement"]`) and `section_count`; no section bodies |
+| GET | `/reports/:id` | member_pro | detail incl. `my_pulse` and `sections[]`. **`summary_md` is the Doc's ROOT page only** (Executive Summary, Pillar Status Snapshot, Consolidated Risks) — the bulk of a monthly report is in `sections`, so rendering `summary_md` alone drops most of it. Each section: `{ id, pillar, pillar_label, pillar_owner, subtitle, body_md, committed_count, delivered_count }`, ordered; `[]` when the Doc has no pillar pages |
 | POST | `/reports/:id/pulse` | member_pro | `{ score: 1..5, comment? }` |
 | POST | `/reports` | super_admin | create draft (`{ tenant_id, sprint_id?, title?, period_start?, period_end?, … }`) |
 | POST | `/reports/:id/publish` | super_admin | publish |
+
+Reports are **monthly, one per client per ClickUp Doc**. Each client has its own
+"Monthly Progress Reports" folder in the Delivery space (mapped by
+`core.tenants.clickup_reports_folder_id`) holding one Doc per month; the Doc's
+root page is the report body and its child pages are the pillar deep-dives that
+become `sections`. Report-level `committed_count`/`delivered_count` are the SUM
+of the pillar Action Item Trackers, and are `null` — not `0` — when no pillar
+page had a tracker. Sync: `POST /internal/sync/reports` with `{}`.
 
 ## Admin — client lifecycle (super_admin)
 | Method | Path | Body |
@@ -173,6 +181,8 @@ department / state / created_at`:
 | GET | `/admin/clients` | list tenants |
 | GET | `/admin/clients/:id/onboarding` | onboarding state machine |
 | PUT | `/admin/clients/:id/clickup-mapping` | `{ clickup_folder_id?, clickup_client_group? }` |
+| GET | `/admin/clients/:id/members` | `{ members[] }` — everyone who already belongs to this client: `user_id`, `full_name`, `email`, `role`, `status`, `joined_at`. `email` is **null** for anyone with no `core.user_credentials` row (an account made by direct SQL, not by registering), so the join is a LEFT one and they still appear. Distinct from invitations: a pending invite is NOT a member until the person registers |
+| PATCH | `/admin/clients/:id/members/:userId` | `{ role?, status? }` — change one member's standing in this client. `role` is tenant-scoped only (`member` / `member_plus` / `member_pro` / `org_admin`); **`super_admin` is rejected by name** (422) because platform-wide access isn't something a per-client screen grants — use `/invitations` for that. `status` is `invited` / `active` / `suspended`; suspending is how access is revoked, so the membership history survives. An omitted field is left untouched, not nulled. `404` when that user has no membership *in this tenant*, which is also what blocks editing another client's member by guessing an id |
 | GET | `/admin/clients/:id/projects` | discovered projects + visibility |
 | POST | `/admin/clients/:id/projects/discover` | pull projects from ClickUp |
 | PATCH | `/admin/clients/:id/projects/:listId` | `{ is_visible }` |

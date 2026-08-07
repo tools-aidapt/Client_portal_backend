@@ -5,10 +5,16 @@ import { requirePlatformAdmin } from '@/api/middlewares/authorize.js';
 import { validate } from '@/api/middlewares/validate.js';
 import { z } from 'zod';
 import { clientsController } from '../controllers/clients.controller.js';
+import { membersController } from '../controllers/members.controller.js';
 import { projectsController } from '../controllers/projects.controller.js';
 import { taskLinksController } from '../controllers/task-links.controller.js';
 import { adminVotingController } from '../controllers/voting.controller.js';
-import { registerClientBody, tenantIdParam } from '../validators/clients.validators.js';
+import {
+  memberParams,
+  registerClientBody,
+  tenantIdParam,
+  updateMemberBody,
+} from '../validators/clients.validators.js';
 
 /**
  * Admin client-lifecycle endpoints (design §10.2). All require a platform admin.
@@ -46,6 +52,24 @@ adminClientsRoutes.post(
   asyncHandler(clientsController.inviteUser),
 );
 
+// --- Members (who already has access to this client's Portal) ---
+// The read side of invitations: `/:id/invitations` adds a person, these two
+// show and adjust the people who already accepted.
+
+adminClientsRoutes.get(
+  '/:id/members',
+  validate({ params: tenantIdParam }),
+  asyncHandler(membersController.list),
+);
+
+// Role here is tenant-scoped only — `super_admin` is rejected by name, since
+// granting platform-wide access is not something a per-client screen can do.
+adminClientsRoutes.patch(
+  '/:id/members/:userId',
+  validate({ params: memberParams, body: updateMemberBody }),
+  asyncHandler(membersController.update),
+);
+
 adminClientsRoutes.put(
   '/:id/clickup-mapping',
   validate({
@@ -54,8 +78,13 @@ adminClientsRoutes.put(
       .object({
         clickup_folder_id: z.string().min(1).optional(),
         clickup_client_group: z.string().min(1).optional(),
+        // The client's "Monthly Progress Reports" folder — a SIBLING of the
+        // client folder, so it is a separate id, never the same one.
+        clickup_reports_folder_id: z.string().min(1).optional(),
       })
-      .refine((b) => Object.keys(b).length > 0, { message: 'Provide folder id or client group' }),
+      .refine((b) => Object.keys(b).length > 0, {
+        message: 'Provide a folder id, reports folder id, or client group',
+      }),
   }),
   asyncHandler(clientsController.setClickupMapping),
 );
