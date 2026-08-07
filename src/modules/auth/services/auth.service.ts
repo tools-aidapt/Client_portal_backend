@@ -5,6 +5,7 @@ import { authRepo, type MeView, type ProfileFields } from '../repositories/auth.
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from '../utils/otp.js';
 import { sendOtpEmail } from '../otp-email.js';
+import { syncUserToLms, syncUserToSupportDesk, ssoRedirectUrl, type SsoTarget } from '../cross-app.js';
 import {
   durationToMs,
   generateRefreshToken,
@@ -69,13 +70,28 @@ export const authService = {
   ): Promise<{ userId: string } & TokenPair> {
     const { token, password, ...profile } = input;
     const passwordHash = await hashPassword(password);
-    const { userId, email } = await authRepo.registerViaInvitation({
+    const { userId, email, role } = await authRepo.registerViaInvitation({
       token,
       passwordHash,
       profile,
     });
+    // Best-effort: this person's Portal account is the real one regardless of
+    // whether LMS/Support Desk are reachable right now — see cross-app.ts for
+    // why neither of these ever throws back into registration.
+    void syncUserToLms({ userId, email, passwordHash, fullName: profile.fullName ?? null, role });
+    void syncUserToSupportDesk({ email, fullName: profile.fullName ?? null, role });
     const tokens = await issueTokens(userId, email, userAgent);
     return { userId, ...tokens };
+  },
+
+  /**
+   * The URL to redirect the browser to so `target` logs itself in without a
+   * second password prompt. Null when that app isn't configured yet (no URL,
+   * or the shared secret hasn't been set) — the caller shows "not connected"
+   * rather than sending the browser to a broken link.
+   */
+  getSsoRedirect(email: string, target: SsoTarget): string | null {
+    return ssoRedirectUrl(email, target);
   },
 
   async updateProfile(userId: string, fields: ProfileFields) {

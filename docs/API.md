@@ -170,7 +170,9 @@ Reports are **monthly, one per client per ClickUp Doc**. Each client has its own
 root page is the report body and its child pages are the pillar deep-dives that
 become `sections`. Report-level `committed_count`/`delivered_count` are the SUM
 of the pillar Action Item Trackers, and are `null` — not `0` — when no pillar
-page had a tracker. Sync: `POST /internal/sync/reports` with `{}`.
+page had a tracker. Only Docs whose own name carries the word "report" plus a
+month and year are synced, so leftovers sharing the folder are ignored.
+Sync: `POST /internal/sync/reports` with `{}`.
 
 ## Admin — client lifecycle (super_admin)
 | Method | Path | Body |

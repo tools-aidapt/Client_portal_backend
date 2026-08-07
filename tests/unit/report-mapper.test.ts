@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   cleanReportBody,
+  isMonthlyReportDoc,
   mapReportDoc,
   mapReportSection,
   monthLabel,
@@ -103,6 +104,39 @@ describe('parseReportPeriod', () => {
   it('rejects an impossible date and an inverted range', () => {
     expect(parseReportPeriod({ rootContent: header('(01-31 February 2026)') })?.end).not.toBe('2026-02-31');
     expect(parseReportPeriod({ rootContent: header('(31-01 July 2026)') })?.start).toBe('2026-07-01');
+  });
+});
+
+describe('isMonthlyReportDoc', () => {
+  it('accepts the real Doc names across all five clients', () => {
+    for (const name of [
+      'KEN - Report - JULY 2026',
+      'ABL - Report - JULY 2026',
+      'JFX - Report - July 2026',
+      'TCC - Report - JULY 2026',
+      'TRO - Report - JULY 2026',
+    ]) {
+      expect(isMonthlyReportDoc(name), name).toBe(true);
+    }
+  });
+
+  it('rejects a leftover with no month in its name', () => {
+    // Kenafric's "KEN - Monthly Reports" was a duplicate of the real July Doc
+    // sitting in the same folder, and syncing it gave the client two identical
+    // July entries.
+    expect(isMonthlyReportDoc('KEN - Monthly Reports')).toBe(false);
+    expect(isMonthlyReportDoc('ABL - Monthly Reports')).toBe(false);
+  });
+
+  it('rejects anything that is not a report', () => {
+    expect(isMonthlyReportDoc('Project Pack')).toBe(false);
+    expect(isMonthlyReportDoc('Meeting notes - July 2026')).toBe(false);
+    expect(isMonthlyReportDoc('')).toBe(false);
+    expect(isMonthlyReportDoc(null)).toBe(false);
+  });
+
+  it('tolerates a different word order for a future month', () => {
+    expect(isMonthlyReportDoc('KEN - August 2026 Report')).toBe(true);
   });
 });
 

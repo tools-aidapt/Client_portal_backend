@@ -237,6 +237,27 @@ const FULL_MONTHS = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
+/**
+ * Whether a Doc in a Monthly Progress Reports folder is actually a month's
+ * report.
+ *
+ * The folders also hold leftovers — Kenafric's "KEN - Monthly Reports" is a
+ * duplicate of the real July Doc that was never cleared out, and syncing it gave
+ * the client two identical July entries. Requiring the Doc's OWN name to carry
+ * both the word "report" and a month + year is what separates
+ * "KEN - Report - JULY 2026" from "KEN - Monthly Reports", and it keeps working
+ * for August without anyone maintaining a list of ids.
+ *
+ * Deliberately not falling back to page names or body content here: a Doc that
+ * cannot say which month it covers in its own title is not one a client should
+ * see, and skipping it is counted and named in `sync_runs`.
+ */
+export function isMonthlyReportDoc(docName: string | null | undefined): boolean {
+  if (!docName || !/report/i.test(docName)) return false;
+  const m = MONTH_ONLY.exec(despace(docName));
+  return m ? monthIndex(m[1]!) >= 0 : false;
+}
+
 /** "July 2026" for a period, used to name a report that has no usable title. */
 export function monthLabel(periodEnd: string): string {
   const [y, m] = periodEnd.split('-').map(Number);

@@ -119,8 +119,10 @@ email is registered, to avoid leaking account existence.
     the pillar deep-dives → `portal.report_sections` (AI Operations /
     Intelligence / Enablement; clients carry 2 or 3). Report-level
     committed/delivered is the SUM of the pillar Action Item Trackers.
-    Kenafric is live from folder `901212877607`. `0030` deleted the nine
-    bi-weekly rows that came from the retired doc `8ckbtec-180492`.
+    **All five clients are live** (Allied Bank `901212877810`, JewelFX
+    `901212877721`, Kenafric `901212877607`, Tile & Carpet Centre `901212877707`,
+    Trolley `901212877735`). `0030` deleted the nine bi-weekly rows that came
+    from the retired doc `8ckbtec-180492`.
 - [x] **Invitations** — invitation-gated registration + n8n invite email (LIVE).
   Inviter sets the role. Platform admin (`POST /admin/clients/:id/invitations`) can
   grant any role incl. `super_admin` (→ sets `is_platform_admin`). Org admin/member_pro
@@ -438,6 +440,18 @@ STUBBED (log-only, need real integration):
   "current" report alternates between runs, and because the notification
   idempotency guard keys on the report's own `/reports/:id` link, every flip
   emits a fresh "new report published" — an hourly notification storm.
+- **Only Docs that name their own month are reports** (`isMonthlyReportDoc`).
+  The folders also collect leftovers — Kenafric's "KEN - Monthly Reports" was a
+  duplicate of the real July Doc and gave the client two identical July entries.
+  Requiring both the word "report" AND a month + year in the DOC's own name
+  separates it from "KEN - Report - JULY 2026" without maintaining a list of ids.
+  Skipped Docs are counted and named in `sync_runs`, never silently dropped.
+- **A withdrawn report goes back to `draft`, not `archived`.**
+  `retireMissingSyncedReports` fires when a Doc leaves the folder (deleted, moved,
+  or no longer matching the name rule). `archived` means "an older month, still
+  worth reading" and stays VISIBLE to the client; a report whose source is gone is
+  a mistake being cleaned up and has to disappear. `draft` is the only status the
+  read queries hide. Never a delete — `sprint_pulse` cascades.
 - **An empty Doc syncs as a `draft`, not `published`.** Trojan's Doc
   (`8ckbtec-241092`) has one page with an empty name and no content. The row is
   still written so the sync stays traceable and idempotent, but a client never

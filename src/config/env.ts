@@ -75,6 +75,26 @@ const envSchema = z.object({
   N8N_OTP_WEBHOOK_URL: z.string().url().optional(),
   OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
   OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
+
+  // Cross-app identity: the Portal is the source of truth for who a person is.
+  // LMS and Support Desk each built their receiving half already; these are the
+  // Portal's half. All optional — each integration degrades to a no-op (logged,
+  // never thrown) if its URL/secret isn't set, so this never blocks registration.
+  LMS_URL: z.string().url().optional(),
+  // Shared secret with the LMS's own `/auth/register` — NOT the same value as
+  // this app's own INTERNAL_API_SECRET, deliberately kept separate per-integration.
+  LMS_INTERNAL_SECRET: z.string().min(1).optional(),
+  // LMS's frontend — for the SSO redirect once LMS builds a receiving page.
+  // Separate from LMS_URL (the backend), used for the server-to-server register call.
+  LMS_FRONTEND_URL: z.string().url().optional(),
+  SUPPORT_DESK_URL: z.string().url().optional(),
+  // Shared secret with Support Desk's `/auth/callback` SSO redirect.
+  REDIRECT_TOKEN_SECRET: z.string().min(16).optional(),
+  // Support Desk's own backend URL (distinct from SUPPORT_DESK_URL, its
+  // frontend) — used for the server-to-server POST /auth/register call.
+  SUPPORT_DESK_BACKEND_URL: z.string().url().optional(),
+  // Shared secret with Support Desk's own PORTAL_INTERNAL_SECRET.
+  SUPPORT_DESK_INTERNAL_SECRET: z.string().min(1).optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

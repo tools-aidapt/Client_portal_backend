@@ -16,6 +16,22 @@ import type {
 } from '../validators/auth.validators.js';
 
 export const authController = {
+  /**
+   * `GET /auth/sso/:target` — a redirect URL that logs the caller straight
+   * into `target` (currently `support-desk`; `lms` once it builds its own
+   * receiving endpoint). Null `redirect_url` means that app isn't configured
+   * yet — the frontend shows "not connected," never a broken link.
+   */
+  async sso(req: Request, res: Response): Promise<void> {
+    const target = req.params.target;
+    if (target !== 'support-desk' && target !== 'lms') {
+      throw new BadRequestError('Unknown SSO target');
+    }
+    if (!req.auth?.user.email) throw new UnauthorizedError();
+    const redirectUrl = authService.getSsoRedirect(req.auth.user.email, target);
+    res.status(StatusCodes.OK).json(ok({ redirect_url: redirectUrl }));
+  },
+
   async register(req: Request, res: Response): Promise<void> {
     const body = req.body as RegisterBody;
     const result = await authService.register(body, req.header('user-agent') ?? undefined);

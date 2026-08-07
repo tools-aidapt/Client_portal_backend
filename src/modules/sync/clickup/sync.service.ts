@@ -16,7 +16,12 @@ import {
   type TaskBucket,
   type TaskSource,
 } from './mapper.js';
-import { mapReportDoc, mapReportSection, parseReportPeriod } from './report-mapper.js';
+import {
+  isMonthlyReportDoc,
+  mapReportDoc,
+  mapReportSection,
+  parseReportPeriod,
+} from './report-mapper.js';
 import { mapCaseStudyTask, shortListName } from './usecase-mapper.js';
 import { mapWishlistTask } from './wishlist-mapper.js';
 
@@ -446,6 +451,16 @@ export const syncService = {
           continue;
         }
         if (opts.docId) docs = docs.filter((d) => d.id === opts.docId);
+
+        // Leftovers live in these folders too (Kenafric's "KEN - Monthly Reports"
+        // duplicates its real July Doc). Only Docs that name their own month are
+        // client reports; the rest are counted and named rather than dropped.
+        const notReports = docs.filter((d) => !isMonthlyReportDoc(d.name));
+        for (const d of notReports) {
+          skipped++;
+          problems.push(`${d.name || d.id}: not a monthly report Doc`);
+        }
+        docs = docs.filter((d) => isMonthlyReportDoc(d.name));
 
         const seenDocIds: string[] = [];
         let tenantFailures = 0;

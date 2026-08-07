@@ -49,6 +49,10 @@ authRoutes.post('/refresh', validate({ body: refreshBody }), asyncHandler(authCo
 authRoutes.post('/logout', validate({ body: logoutBody }), asyncHandler(authController.logout));
 authRoutes.post('/logout-all', authenticate, asyncHandler(authController.logoutAll));
 
+// Cross-app SSO: a redirect URL that logs the caller straight into another
+// sibling app (no second password prompt). :target is 'support-desk' | 'lms'.
+authRoutes.get('/sso/:target', authenticate, asyncHandler(authController.sso));
+
 // Profile + memberships + which apps the caller can open.
 authRoutes.get('/me', authenticate, asyncHandler(authController.me));
 authRoutes.patch(

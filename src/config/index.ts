@@ -60,6 +60,15 @@ export const config = {
     inviteWebhookUrl: env.N8N_INVITE_WEBHOOK_URL,
     otpWebhookUrl: env.N8N_OTP_WEBHOOK_URL,
   },
+  crossApp: {
+    lmsUrl: env.LMS_URL,
+    lmsInternalSecret: env.LMS_INTERNAL_SECRET,
+    lmsFrontendUrl: env.LMS_FRONTEND_URL,
+    supportDeskUrl: env.SUPPORT_DESK_URL,
+    redirectTokenSecret: env.REDIRECT_TOKEN_SECRET,
+    supportDeskBackendUrl: env.SUPPORT_DESK_BACKEND_URL,
+    supportDeskInternalSecret: env.SUPPORT_DESK_INTERNAL_SECRET,
+  },
 } as const;
 
 export type Config = typeof config;

@@ -442,19 +442,25 @@ export const syncRepo = {
   },
 
   /**
-   * Archive synced reports whose Doc has disappeared from the client's folder.
+   * Withdraw synced reports whose Doc is gone from the client's folder — deleted,
+   * moved, or no longer recognised as a monthly report.
    *
-   * Archived, never deleted — `portal.sprint_pulse` cascades, and a client's
-   * rating is not something a sync should be able to destroy. The caller only
-   * invokes this after a clean, non-empty listing: doing it after a partial
-   * fetch would retire every report the failed call didn't return.
+   * Set back to `draft`, not `archived`. Archived means "an older month, still
+   * worth reading" and stays visible to the client; a report whose source has
+   * gone is not history, it is a mistake being cleaned up, and it should
+   * disappear. Draft is the only status the read queries hide.
+   *
+   * Never deleted: `portal.sprint_pulse` cascades, and a client's rating is not
+   * something a sync should be able to destroy. The caller only invokes this
+   * after a clean, non-empty listing — doing it after a partial fetch would
+   * withdraw every report the failed call didn't return.
    */
   async retireMissingSyncedReports(tenantId: string, seenDocIds: string[]): Promise<number> {
     if (seenDocIds.length === 0) return 0;
     const { rowCount } = await pool.query(
-      `update portal.reports set status = 'archived'
+      `update portal.reports set status = 'draft'
         where tenant_id = $1 and clickup_doc_id is not null
-          and status <> 'archived' and clickup_doc_id <> all($2::text[])`,
+          and status <> 'draft' and clickup_doc_id <> all($2::text[])`,
       [tenantId, seenDocIds],
     );
     return rowCount ?? 0;
