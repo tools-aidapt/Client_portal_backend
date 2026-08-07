@@ -22,6 +22,13 @@ export interface ClickUpTask {
   name: string;
   /** Plain-text task body. Returned by `/list/:id/task` and `/task/:id`. */
   description?: string | null;
+  /**
+   * The same body with its markdown intact — only present when the request
+   * asks for it (`include_markdown_description`). The intake form's fields
+   * survive as `**Label:** value` lines here but are flattened in
+   * `description`, so this is the one that can be parsed.
+   */
+  markdown_description?: string | null;
   /** Parent task id when this card is a subtask; null on top-level tasks. */
   parent?: string | null;
   status?: { status?: string };
@@ -107,13 +114,24 @@ export class ClickUpClient {
     return (await res.json()) as T;
   }
 
-  /** All tasks in a list, following pagination (100/page). */
+  /**
+   * All tasks in a list, following pagination (100/page).
+   *
+   * `include_markdown_description` is a flag on this same request, not a second
+   * call — the onboarding sync needs the intake form's "Project name" line, and
+   * fetching descriptions task-by-task would turn one request into a hundred.
+   */
   async getListTasks(listId: string): Promise<ClickUpTask[]> {
     const out: ClickUpTask[] = [];
     for (let page = 0; ; page++) {
       const data = await this.get<{ tasks: ClickUpTask[]; last_page?: boolean }>(
         `/list/${listId}/task`,
-        { page: String(page), subtasks: 'true', include_closed: 'true' },
+        {
+          page: String(page),
+          subtasks: 'true',
+          include_closed: 'true',
+          include_markdown_description: 'true',
+        },
       );
       out.push(...data.tasks);
       if (data.last_page || data.tasks.length === 0) break;
@@ -121,8 +139,9 @@ export class ClickUpClient {
     return out;
   }
 
+  /** One task. Asks for the markdown body for the same reason `getListTasks` does. */
   async getTask(taskId: string): Promise<ClickUpTask> {
-    return this.get<ClickUpTask>(`/task/${taskId}`);
+    return this.get<ClickUpTask>(`/task/${taskId}`, { include_markdown_description: 'true' });
   }
 
   async getFolderLists(folderId: string): Promise<ClickUpList[]> {

@@ -73,8 +73,34 @@ email is registered, to avoid leaking account existence.
 - [x] **4. Portal client reads** — `/dashboard`, `/projects`, `/sprint/active`,
   `/onboarding`, `/pod`, `/notifications` (+read). LMS tile computed live from the
   LMS team's schema (domain join). `PUT /admin/clients/:id/clickup-mapping` added.
-- [x] **5. Wishlist + voting** — `/wishlist` (list/submit/vote, MemberPlus+),
-  month-end `POST /internal/voting/close-cycle` (winner→prioritised, notify, reopen).
+- [x] **5. Wishlist + voting** — `/wishlist` (**read: `member`**; submit/vote:
+  MemberPlus+), `POST`/`DELETE /wishlist/:id/vote` (both idempotent),
+  `POST /internal/voting/close-cycle` (winner→prioritised, notify, reopen).
+  - [x] **Requests are authored in ClickUp, never in the Portal.** The Wishlist page's
+    "Submit a request" links out to `WISHLIST_FORM_URL`
+    (`https://processonboarding.aidaptnow.com/wishlist/`, same pattern as
+    `ONBOARDING_FORM_URL`); the form writes to the shared list and the item appears at
+    the next `POST /internal/sync/wishlist`. `POST /wishlist` still exists but the UI
+    doesn't use it, so every request enters through one pipeline.
+  - [x] **Request detail synced + parsed** (migration `0027`) — the intake form lives in
+    the ClickUp task's `markdown_description`; `wishlist-mapper.ts` parses it into
+    `problem`/`who_feels_pain`/`urgency`/`submitter_*` columns. `body_md` is the
+    **leftover** body (markdown, rendered via `<Markdown compact>`): everything with its
+    own column is stripped, along with placeholder-only answers and the request title, so
+    it never double-renders a section and never shows a client "None"/"—". Null on most
+    rows. 26 unit tests over the real corpus; `scripts/smoke-wishlist-parse.ts`
+    is the read-only coverage probe (14/14 submitter blocks, 13/14 problems, **0 retired
+    taxonomy leaks**). No `capability` column — the form's pillar line is stripped, never
+    translated. The submitter email is used in memory only, to resolve `submitted_by`.
+  - [x] **Voting completed** — un-vote (`DELETE`), idempotent repeat vote (was `409`),
+    snake_case `{ item_id, votes, voted, changed }`, `can_vote`/`votes_all_time`,
+    tenant-scoped admin cycle management (`/admin/clients/:id/voting/cycles*` — list,
+    breakdown, close w/ `notify`, extend, reopen, open) and
+    `PATCH /admin/clients/:id/wishlist-items/:itemId` for `state` (the only path to
+    `in_progress`/`shipped`). One-open-cycle-per-tenant index. `closeDueCycles` now
+    catches up to the current month in ONE pass and loops to convergence.
+    `voting_opened`/`item_prioritised` notifications now actually fire.
+    Verified live: `scripts/smoke-wishlist-voting.ts`, 32/32 checks, no data left behind.
   - [x] **Wishlist → Onboarding link** (migration `0024`) — `task_cache.source_wishlist_item_id`
     records that an onboarding task is the prioritised wishlist item the client voted for.
     Set by a **deliberate admin action**, never inferred: `PATCH /admin/clients/:id/tasks/
@@ -170,6 +196,34 @@ STUBBED (log-only, need real integration):
 - Voting winner **ClickUp write-back** (`voting.service.ts`).
 
 ## Known findings / gotchas
+- **`POST /internal/voting/close-cycle` is GLOBAL** — it closes due cycles for
+  every tenant. Curling it at production to "just fix one client" touches them all.
+  `votingService.closeCycle(cycleId)` and the `/admin/clients/:id/voting/cycles/*`
+  routes are the tenant-scoped path. Schedule the internal one **daily**
+  (`0 1 * * *`), not monthly: it's idempotent and a no-op on 29 days in 30, whereas
+  a monthly job that fails once silently loses a month — which is exactly how
+  Kenafric's cycle ended up six days overdue.
+- **5 of the 14 tasks on the shared wishlist list are mis-tagged
+  `Client Group = Allied Bank`** (`869dcrgtj`, `869dct5cg`, `869dctm3e`, `869dcwv2n`,
+  `869dha513`) but are plainly Aidapt-internal or JewelFX submissions. Harmless
+  today — no Allied Bank tenant exists, so they're skipped as unrouted — but they
+  become a **confidentiality leak the day one is onboarded**. A ClickUp data fix,
+  not a code fix. A 6th (`869e3v5yn`) has no Client Group at all and is correctly
+  counted as unrouted.
+- **Wishlist bodies are internal test data.** All three Kenafric submissions come
+  from `@aidapt.co` addresses with placeholder text (one reads "Pain in the ass");
+  "Kenafric - Website" has the literal word `None` in every answer, which the parser
+  correctly nulls, so it renders the UI's "Only a title so far" state. The parse
+  gaps are correct behaviour, not failures.
+- **Wishlist detail lives ONLY on the shared list.** The per-client mirrors
+  (`KEN - Wishlist` `901218210637`, plus `ABL -`/`JFX -`/`TCC -`) are ClickBot copies
+  created ~1.2s after the original with **empty descriptions** and different task
+  ids. `isProjectList` already excludes them; the ids are recorded in
+  `sync.constants.ts` so nobody points the sync at one.
+- **`markdown_description` needs asking for.** The v2 task endpoints only return it
+  with `include_markdown_description=true`; `text_content` renders the form's
+  Submitter table as `[table-embed:…]` and plain `description` drops the pipes, so
+  both are useless for parsing.
 - **`GET /onboarding` was a hard 500 for every tenant** until 2026-08-06:
   `portalRepo.onboardingTasks` joins `clickup_list_mappings`, which has its own
   `clickup_list_id`, so the shared unqualified `TASK_COLUMNS` list made Postgres

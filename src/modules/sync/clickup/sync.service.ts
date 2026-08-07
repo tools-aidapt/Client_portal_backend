@@ -13,6 +13,7 @@ import {
   type TaskSource,
 } from './mapper.js';
 import { mapCaseStudyTask, shortListName } from './usecase-mapper.js';
+import { mapWishlistTask } from './wishlist-mapper.js';
 
 export interface SyncResult {
   runId: string;
@@ -267,8 +268,12 @@ export const syncService = {
    * here: that checkbox has never actually been set on any wishlist task (it's
    * an unused artifact of a workspace-wide custom field template, not a real
    * curation step for this list) — gating on it would sync nothing. Voting
-   * stays portal-native; this only ever touches `title`/`clickup_task_id`,
-   * never votes/state.
+   * stays portal-native; this never touches votes or `state`.
+   *
+   * The task's `markdown_description` holds the whole intake form, which
+   * `mapWishlistTask` parses into the detail columns added in migration `0027`
+   * (Problem / Who feels the pain / Urgency / Submitter). Before that the board
+   * showed a bare title and nobody could tell what they were voting on.
    */
   async syncWishlist(listId: string): Promise<SyncResult> {
     const runId = await syncRepo.startRun('wishlist', null);
@@ -276,11 +281,22 @@ export const syncService = {
       const client = new ClickUpClient();
       const tasks = await client.getListTasks(listId);
       const groupTenant = new Map<string, string | null>();
+      const profileByEmail = new Map<string, string | null>();
       let upserted = 0;
       let skipped = 0;
 
       for (const task of tasks) {
+        // `getListTasks` passes `subtasks=true`, so a subtask of a submission
+        // would otherwise become a wishlist item of its own. None exist on this
+        // list today; this keeps it that way if someone ever adds one.
+        if (task.parent) {
+          skipped++;
+          continue;
+        }
+
         const group = extractClientGroup(task);
+        // A task with the field unset at all (one exists today) is unroutable —
+        // count it rather than guessing a tenant for it.
         const tenantId = group
           ? (groupTenant.has(group)
               ? groupTenant.get(group)!
@@ -290,12 +306,24 @@ export const syncService = {
           skipped++;
           continue;
         }
-        await wishlistRepo.upsertFromClickUp({
-          tenantId,
-          clickupTaskId: task.id,
-          title: task.name,
-          createdAt: task.date_created ? new Date(Number(task.date_created)).toISOString() : null,
-        });
+
+        const row = mapWishlistTask(task, { tenantId });
+
+        // Attribute the request to a real portal user when the form's email
+        // matches someone in THIS tenant. The email itself is never stored
+        // (migration 0027) — only the resolved profile id, in `submitted_by`.
+        let submittedBy: string | null = null;
+        const email = row.detail.submitterEmail;
+        if (email) {
+          const key = `${tenantId}:${email}`;
+          submittedBy = profileByEmail.has(key)
+            ? profileByEmail.get(key)!
+            : profileByEmail
+                .set(key, await syncRepo.resolveTenantProfileByEmail(tenantId, email))
+                .get(key)!;
+        }
+
+        await wishlistRepo.upsertFromClickUp({ ...row, submittedBy });
         upserted++;
       }
 

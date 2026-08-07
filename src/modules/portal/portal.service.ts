@@ -1,3 +1,4 @@
+import { config } from '@config/index.js';
 import { portalRepo } from './portal.repository.js';
 
 type Bucket = 'delivered' | 'in_progress' | 'upcoming';
@@ -45,14 +46,17 @@ export const portalService = {
   async sprintActive(tenantId: string) {
     const sprint = await portalRepo.activeSprint();
     if (!sprint) return { sprint: null, tasks: [] as Array<Record<string, unknown>> };
-    const tasks = await portalRepo.sprintTasks(tenantId, sprint.id);
+    const tasks = await portalRepo.sprintTasks(tenantId, sprint.starts_on, sprint.ends_on);
     return { sprint, tasks };
   },
 
   async onboarding(tenantId: string) {
     const tasks = await portalRepo.onboardingTasks(tenantId);
-    // intake_form_url is not modeled yet; surfaced as null for the frontend.
-    return { tasks, intake_form_url: null };
+    // One public form for every client (submissions route by the Client Group
+    // picked in the form itself), so it's config, not per-tenant data. Null when
+    // unconfigured — the frontend disables the button rather than opening
+    // nowhere.
+    return { tasks, intake_form_url: config.web.onboardingFormUrl ?? null };
   },
 
   async pod(tenantId: string) {

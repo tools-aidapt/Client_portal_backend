@@ -188,6 +188,28 @@ export const syncRepo = {
     return rows[0]?.id ?? null;
   },
 
+  /**
+   * A profile id for an email, but only if that person is a member of this
+   * tenant. Scoped through `core.memberships` on purpose: the wishlist intake
+   * form is a public form, so the address it captures is untrusted input, and
+   * matching it against `core.profiles` alone would let a submission be
+   * attributed to a user in a different client's tenant.
+   */
+  async resolveTenantProfileByEmail(tenantId: string, email: string): Promise<string | null> {
+    // Email lives on core.user_credentials, not core.profiles (migration 0014
+    // moved auth in-house and profiles carries no address of its own).
+    const { rows } = await pool.query<{ id: string }>(
+      `select c.user_id as id
+         from core.user_credentials c
+         join core.memberships m
+           on m.user_id = c.user_id and m.tenant_id = $1 and m.status = 'active'
+        where lower(c.email) = lower($2)
+        limit 1`,
+      [tenantId, email],
+    );
+    return rows[0]?.id ?? null;
+  },
+
   async getTenantFolderId(tenantId: string): Promise<string | null> {
     const { rows } = await pool.query<{ clickup_folder_id: string | null }>(
       `select clickup_folder_id from core.tenants where id = $1`,
@@ -262,10 +284,11 @@ export const syncRepo = {
     await pool.query(
       `insert into portal.task_cache
          (tenant_id, clickup_task_id, source, sprint_id, clickup_list_id, list_name,
-          name, status_raw, bucket, rag, progress_pct, type_of_work, parent_task_id,
-          client_visible, assignee_names, start_date, due_date, closed_at, url, synced_at)
-       values ($1,$2,$3::portal.task_source,$4,$5,$6,$7,$8,$9::portal.task_bucket,
-               $10::portal.rag_status,$11,$12,$13,$14,$15::text[],$16,$17,$18,$19, now())
+          name, display_title, status_raw, bucket, rag, progress_pct, type_of_work,
+          parent_task_id, client_visible, assignee_names, start_date, due_date,
+          closed_at, url, synced_at)
+       values ($1,$2,$3::portal.task_source,$4,$5,$6,$7,$8,$9,$10::portal.task_bucket,
+               $11::portal.rag_status,$12,$13,$14,$15,$16::text[],$17,$18,$19,$20, now())
        on conflict (clickup_task_id) do update set
          tenant_id = excluded.tenant_id,
          source = excluded.source,
@@ -273,6 +296,7 @@ export const syncRepo = {
          clickup_list_id = excluded.clickup_list_id,
          list_name = excluded.list_name,
          name = excluded.name,
+         display_title = excluded.display_title,
          status_raw = excluded.status_raw,
          bucket = excluded.bucket,
          rag = excluded.rag,
@@ -288,8 +312,8 @@ export const syncRepo = {
          synced_at = now()`,
       [
         t.tenantId, t.clickupTaskId, t.source, t.sprintId, t.clickupListId, t.listName,
-        t.name, t.statusRaw, t.bucket, t.rag, t.progressPct, t.typeOfWork, t.parentTaskId,
-        t.clientVisible, t.assigneeNames, t.startDate, t.dueDate, t.closedAt, t.url,
+        t.name, t.displayTitle, t.statusRaw, t.bucket, t.rag, t.progressPct, t.typeOfWork,
+        t.parentTaskId, t.clientVisible, t.assigneeNames, t.startDate, t.dueDate, t.closedAt, t.url,
       ],
     );
   },

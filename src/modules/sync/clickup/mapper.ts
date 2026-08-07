@@ -60,6 +60,8 @@ export interface TaskCacheUpsert {
   clickupListId: string | null;
   listName: string | null;
   name: string;
+  /** Client-facing title parsed out of an intake-form body; null when absent. */
+  displayTitle: string | null;
   statusRaw: string | null;
   bucket: TaskBucket | null;
   rag: Rag | null;
@@ -128,6 +130,28 @@ function toTimestamp(ms: string | null | undefined): string | null {
   return new Date(n).toISOString();
 }
 
+/**
+ * The one line of an intake-form body worth showing a client.
+ *
+ * Submissions on the shared Process List are named after the company that filed
+ * them ("Kenafric", "KENAFRIC INDUSTRIES LIMITED", "Kenafric Industries Ltd" —
+ * three distinct, real requests), so the task name alone can't tell two apart.
+ * The form's own "Project name" field can.
+ *
+ * Only that field is taken. The rest of the body is internal Aidapt prose —
+ * scoping notes, pricing, pod chatter — and none of it is fit to surface
+ * verbatim in a client-facing page, so nothing else from the description is
+ * ever stored (the same call made for `wishlist_items.description`).
+ */
+const PROJECT_NAME_RE = /\*\*Project name:\*\*\s*(.+)/i;
+
+/** The intake form's "Project name" value, or null if the body has no such line. */
+export function extractDisplayTitle(markdown: string | null | undefined): string | null {
+  if (!markdown) return null;
+  const value = PROJECT_NAME_RE.exec(markdown)?.[1]?.trim();
+  return value ? value : null;
+}
+
 const RAG_VALUES = new Set<Rag>(['green', 'amber', 'red']);
 
 function normalizeRag(value: string | null): Rag | null {
@@ -159,6 +183,7 @@ export function mapClickUpTask(
     clickupListId: task.list?.id ?? null,
     listName: task.list?.name ?? null,
     name: task.name,
+    displayTitle: extractDisplayTitle(task.markdown_description),
     statusRaw,
     bucket,
     rag: normalizeRag(dropdownName(fieldById(task, FIELD.rag))),
@@ -255,12 +280,18 @@ export function parseReportPageTitle(name: string): { number: number; date: stri
   return date ? { number: Number(num[1]), date } : null;
 }
 
-/** Split a markdown table row into trimmed cells. */
-function tableCells(line: string): string[] {
+/**
+ * Split a markdown table row into trimmed cells.
+ * Exported for `wishlist-mapper.ts`, which parses the intake form's Submitter
+ * table: table-cell handling is a real bug class (ClickUp emits `| ---| --- |`
+ * with no space before the pipe), so both parsers share one implementation
+ * rather than keeping two that can silently diverge.
+ */
+export function tableCells(line: string): string[] {
   return line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
 }
 
-function isSeparatorRow(cells: string[]): boolean {
+export function isSeparatorRow(cells: string[]): boolean {
   return cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c));
 }
 

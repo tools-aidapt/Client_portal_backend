@@ -127,6 +127,35 @@ table**, and it's worth being precise about which is which.
 | `state` | `candidate` / `prioritised` / `in_progress` / `shipped` | Always starts `candidate`; moves to `prioritised` when a monthly voting cycle closes and picks a winner |
 | `submitted_by` | Which profile submitted it, for native submissions | Null for ClickUp-synced items — there's no portal user "submitter" for something that came from a form outside the app |
 | `reference_video_url`, `department` | Extra context fields | Only usable for native submissions right now |
+| `problem`, `who_feels_pain`, `urgency`, `submitter_notes` | The request itself, parsed out of the ClickUp intake form | Migration `0027`. All nullable — the form's own placeholders (`—`, `None`) are normalised to null so the UI shows nothing rather than "None" |
+| `submitter_name`, `submitter_role`, `submitter_company`, `submitted_at` | Who filed it | From the form's machine-generated `\| Field \| Value \|` table, which is the one reliably-shaped block in the whole body |
+| `body_md` | The leftover form body, as markdown | The fallback for what the parser did NOT understand. Everything with a column of its own is stripped (Problem, Notes, the Submitter table, Urgency, Who feels the pain, the request title), as are placeholder-only answers and retired taxonomy — so it can't duplicate a section the UI already renders, and can't show a client "None"/"—". Null on 2 of the 3 live rows; the third holds only the optional "Year-review priorities" block |
+| `synced_at` | Last sync timestamp | This table's first freshness column. Makes a future "retire rows deleted in ClickUp" sweep possible; that sweep is deliberately NOT built (see below) |
+
+**The submitter's email is deliberately not stored.** The sync uses it in memory only,
+to resolve `submitted_by` against profiles that are members of *that* tenant — the
+intake form is public, so the address it captures is untrusted input and matching it
+against `core.profiles` alone would let a submission be attributed to another
+client's user. When nothing matches, `submitter_name` carries the display string and
+no new personal data lands in the table.
+
+**There is no `capability` column, on purpose.** The form's `**OS Pillar:**` /
+`**Capability:**` line holds `ProductivityOS`, `DataOS` and
+`Needs assignment (submitter chose "Not sure")`. Collapsing those into
+Operations/Intelligence/Enablement would be inventing a mapping — the same call
+`0022` made for case studies — so the parser strips the line entirely.
+
+**No retire sweep.** `wishlist_votes.item_id` and `voting_cycles.winning_item_id`
+reference these rows, and a sweep keyed on `synced_at < run_start` would retire the
+whole board the first time a ClickUp page fetch failed mid-run. Rows deleted in
+ClickUp therefore persist. Documented rather than papered over.
+
+**Live parse coverage** (3 Kenafric rows, 2026-08-07): `submitter_name`/`submitted_at`
+3/3, `problem` 2/3, `who_feels_pain` 2/3, `urgency` 1/3. The gaps are correct, not
+failures — "Kenafric - Website" was submitted with the literal word `None` in every
+free-text answer, and two others left Urgency as `—`. Across all 14 tasks on the
+shared list: `problem` 13/14, submitter block 14/14, and **zero** rows carrying
+retired taxonomy in any column.
 
 **Worked example, and a real gotcha we hit**: the *canonical* source is one shared
 ClickUp list, `"ORG - Client - Wishlist,"` which every client's form submissions land in
@@ -143,6 +172,13 @@ entirely.
 |---|---|---|
 | `cycle_id`, `item_id`, `user_id` | Unique together | Enforces "one vote per person per item per monthly cycle" at the database level — not just in application code |
 
+**This constraint is the entire vote model**, and it is deliberately all of it:
+unlimited items per user per cycle, **no vote budget and no vote weighting** — no
+column exists for either, and adding one would change the meaning of every
+historical row here. Un-voting is a plain row delete (`DELETE /wishlist/:id/vote`),
+which is why supporting it needed no migration; it requires an OPEN cycle, since
+retracting a vote from a closed cycle would rewrite a result already acted on.
+
 ### `voting_cycles` — the monthly window that gates voting
 
 | Column | Meaning | Why |
@@ -158,11 +194,40 @@ tie goes to whichever item was submitted first. Both branches were checked again
 Kenafric cycle inside a rolled-back transaction (2026-08-06): with 2 votes vs 1 the
 higher-voted item won even though it was created *later*; with 1 vs 1 the earlier-created
 one won. The close then sets `is_open = false` + `winning_item_id`, flips the winner to
-`prioritised`, notifies every active member, and opens next month's cycle. **A cycle with
-zero votes closes with `winning_item_id = null` and prioritises nothing** — which is exactly
-the state Kenafric is in: their `2026-07` cycle has 0 votes, and its `closes_at`
-(`2026-08-01`) is already past with `is_open` still `true`, because nothing schedules that
-endpoint yet.
+`prioritised`, notifies `member_plus`+, and opens the next cycle. **A cycle with
+zero votes closes with `winning_item_id = null` and prioritises nothing.**
+
+Three things changed on 2026-08-07:
+
+- **`closeCycle(cycleId)` is split out from `closeDueCycles()`.** The latter is
+  GLOBAL — it closes due cycles for every tenant — so anything that should touch one
+  client (the admin endpoints, a smoke test) calls the former. Worth remembering
+  before curling `/internal/voting/close-cycle` at production.
+- **The next cycle's month is `greatest(closed month + 1, current month)`.** It used
+  to derive purely from the closing cycle, so a job run months late advanced only ONE
+  month per invocation and immediately created another already-due cycle. A catch-up
+  now lands on today's month in a single pass — verified: closing Kenafric's `2026-07`
+  cycle on 2026-08-07 opened `2026-08` directly.
+- **Notifications name the winner** and set `link_url`, and `voting_opened` /
+  `item_prioritised` are now actually emitted (both were defined in the enum since
+  `0002` and never used). Audience is `member_plus`+ rather than every active member:
+  a plain `member` can read the board but not vote, so telling them "results are in"
+  invited an action they don't have.
+
+**Kenafric's dead cycle was closed deliberately, and silently.** Their `2026-07` cycle
+expired (`closes_at 2026-08-01`) with zero votes while nothing scheduled the close. It
+was closed on 2026-08-07 with `notify: false` so their staff's first-ever wishlist
+notification wouldn't be "No votes were cast this cycle"; `2026-08` (closing
+`2026-09-01`) opened in the same pass, nothing was prioritised, and zero notifications
+were written. That is what the `notify` flag exists for.
+
+**At most one cycle may be open per tenant** — `voting_cycles_one_open_per_tenant`,
+a partial unique index added in `0027`. Three paths open cycles (onboarding step 8,
+the close's reopen, the admin endpoint) and nothing stopped two coexisting, which made
+`order by period_month desc limit 1` arbitrary and could have landed two users' votes
+on the same board in different cycles. The reopen insert carries a
+`where not exists (… is_open)` guard so a manually-opened future cycle can't turn that
+index into a constraint violation that aborts the whole month-end job.
 
 ### Closing the wishlist loop — `task_cache.source_wishlist_item_id`
 

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { clientsController } from '../controllers/clients.controller.js';
 import { projectsController } from '../controllers/projects.controller.js';
 import { taskLinksController } from '../controllers/task-links.controller.js';
+import { adminVotingController } from '../controllers/voting.controller.js';
 import { registerClientBody, tenantIdParam } from '../validators/clients.validators.js';
 
 /**
@@ -100,4 +101,64 @@ adminClientsRoutes.patch(
     body: z.object({ wishlist_item_id: z.string().uuid().nullable() }),
   }),
   asyncHandler(taskLinksController.setWishlistSource),
+);
+
+// --- Voting cycles (tenant-scoped; /internal/voting/close-cycle is global) ---
+
+const cycleParams = tenantIdParam.extend({ cycleId: z.string().uuid() });
+const closesAtBody = z.object({ closes_at: z.string().datetime() });
+
+adminClientsRoutes.get(
+  '/:id/voting/cycles',
+  validate({ params: tenantIdParam }),
+  asyncHandler(adminVotingController.listCycles),
+);
+
+adminClientsRoutes.get(
+  '/:id/voting/cycles/:cycleId/breakdown',
+  validate({ params: cycleParams }),
+  asyncHandler(adminVotingController.cycleBreakdown),
+);
+
+// `notify` defaults TRUE so closing a real cycle tells the client by default;
+// pass false for a dead cycle nobody voted in.
+adminClientsRoutes.post(
+  '/:id/voting/cycles/:cycleId/close',
+  validate({ params: cycleParams, body: z.object({ notify: z.boolean().default(true) }) }),
+  asyncHandler(adminVotingController.closeCycle),
+);
+
+adminClientsRoutes.patch(
+  '/:id/voting/cycles/:cycleId',
+  validate({ params: cycleParams, body: closesAtBody }),
+  asyncHandler(adminVotingController.extendCycle),
+);
+
+adminClientsRoutes.post(
+  '/:id/voting/cycles/:cycleId/reopen',
+  validate({ params: cycleParams, body: closesAtBody }),
+  asyncHandler(adminVotingController.reopenCycle),
+);
+
+adminClientsRoutes.post(
+  '/:id/voting/cycles',
+  validate({
+    params: tenantIdParam,
+    body: z.object({
+      // First of the month; defaults to the current month.
+      period_month: z.string().date().optional(),
+      closes_at: z.string().datetime().optional(),
+    }),
+  }),
+  asyncHandler(adminVotingController.openCycle),
+);
+
+// The only path to in_progress / shipped — the close job only sets 'prioritised'.
+adminClientsRoutes.patch(
+  '/:id/wishlist-items/:itemId',
+  validate({
+    params: tenantIdParam.extend({ itemId: z.string().uuid() }),
+    body: z.object({ state: z.enum(['candidate', 'prioritised', 'in_progress', 'shipped']) }),
+  }),
+  asyncHandler(adminVotingController.setItemState),
 );

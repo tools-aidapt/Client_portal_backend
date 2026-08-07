@@ -126,15 +126,47 @@ export const portalRepo = {
     return (rows[0] as { id: string; name: string; starts_on: string | null; ends_on: string | null }) ?? null;
   },
 
-  /** Client-visible tasks on a given sprint for a tenant (Sprint Line). */
-  async sprintTasks(tenantId: string, sprintId: string): Promise<Array<Record<string, unknown>>> {
+  /**
+   * Client-visible tasks falling inside a sprint's date window (Sprint Line).
+   *
+   * **Scoped by due date, not by `task_cache.sprint_id`.** The obvious read —
+   * `source = 'sprint' and sprint_id = $2` — is what this used to do, and it
+   * returned zero rows for every tenant, every sprint: that path requires each
+   * task to be duplicated onto a per-sprint ClickUp list and routed by "Client
+   * Group", and no such list is ever populated in this workspace (Kenafric's
+   * only two `source = 'sprint'` rows are `client_visible = false`). The
+   * "Sprint Number" custom field was checked as an alternative and is unset on
+   * every delivery task. So each delivery task's own `due_date` is the only
+   * genuine per-task sprint signal available.
+   *
+   * The window is inclusive on both ends, matching how `sprints.is_active` is
+   * computed (`today` inside `[starts_on, ends_on]`). Both dates are nullable
+   * on `sprints`; with either missing there is no window to filter on, and an
+   * unbounded range would return the tenant's entire delivery backlog as "this
+   * sprint" — so the caller gets `[]` instead.
+   *
+   * The bounds are typed `string | Date` because node-postgres parses `date`
+   * columns into JS `Date`s, so `activeSprint()` hands over Dates despite its
+   * own (pre-existing, inaccurate) `string | null` annotation. Both work: the
+   * explicit `::date` casts pin the comparison to calendar days, so a Date
+   * carrying a local-midnight offset can't be shifted a day by the server's
+   * timezone (verified against the live DB — server `UTC`, client `UTC+5`,
+   * bounds still resolved to 2026-07-26 / 2026-08-09).
+   */
+  async sprintTasks(
+    tenantId: string,
+    startsOn: string | Date | null,
+    endsOn: string | Date | null,
+  ): Promise<Array<Record<string, unknown>>> {
+    if (!startsOn || !endsOn) return [];
     const { rows } = await pool.query(
       `select ${TASK_COLUMNS}
          from portal.task_cache tc
-        where tc.tenant_id = $1 and tc.source = 'sprint' and tc.sprint_id = $2
+        where tc.tenant_id = $1 and tc.source = 'delivery'
           and tc.client_visible = true
+          and tc.due_date between $2::date and $3::date
         order by tc.due_date nulls last, tc.name`,
-      [tenantId, sprintId],
+      [tenantId, startsOn, endsOn],
     );
     return rows;
   },
@@ -159,10 +191,16 @@ export const portalRepo = {
    * is cached against the wrong tenant is another client's name. Only
    * `syncOnboardingRequests` — which routes each task by its "Client Group" —
    * sets the flag, so anything a tenant-blanket sync path drops in stays hidden.
+   *
+   * `display_title` is selected only here: it is the intake form's "Project
+   * name" (see migration 0026), which only submissions on this list carry. The
+   * frontend prefers it over `name`, since several of a client's submissions
+   * are named after the client itself and are otherwise indistinguishable.
    */
   async onboardingTasks(tenantId: string): Promise<Array<Record<string, unknown>>> {
     const { rows } = await pool.query(
-      `select ${TASK_COLUMNS}, tc.source_wishlist_item_id, wi.title as source_wishlist_title
+      `select ${TASK_COLUMNS}, tc.display_title, tc.source_wishlist_item_id,
+              wi.title as source_wishlist_title
          from portal.task_cache tc
          join portal.clickup_list_mappings m
            on m.tenant_id = tc.tenant_id and m.clickup_list_id = tc.clickup_list_id

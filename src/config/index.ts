@@ -50,6 +50,8 @@ export const config = {
   },
   web: {
     portalBaseUrl: env.PORTAL_BASE_URL,
+    onboardingFormUrl: env.ONBOARDING_FORM_URL,
+    wishlistFormUrl: env.WISHLIST_FORM_URL,
   },
   n8n: {
     inviteWebhookUrl: env.N8N_INVITE_WEBHOOK_URL,

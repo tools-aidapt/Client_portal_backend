@@ -103,9 +103,57 @@ Each endpoint below notes the minimum role.
 ## Wishlist
 | Method | Path | Role | Body |
 |---|---|---|---|
-| GET | `/wishlist` | member_plus | `{ cycle, items[] }` (items have `votes`, `voted_by_me`) |
-| POST | `/wishlist` | member_plus | `{ title, description? }` |
-| POST | `/wishlist/:id/vote` | member_plus | — (one vote per item per open cycle) |
+| GET | `/wishlist` | **member** (read-only) | `{ cycle, last_closed_cycle, items[] }` — see below |
+| POST | `/wishlist` | member_plus | `{ title, description?, reference_video_url?, department? }` — a portal-native request. **The Wishlist page does not use this**; it links out to `submit_form_url` so every request goes through ClickUp. Kept for API completeness |
+| POST | `/wishlist/:id/vote` | member_plus | — → `{ item_id, votes, voted: true, changed }`. **Idempotent**: voting twice is a `200` with `changed: false`, not a `409`. `400` if the item is no longer a `candidate` |
+| DELETE | `/wishlist/:id/vote` | member_plus | remove your vote → `{ item_id, votes, voted: false, changed }`. **Idempotent**: un-voting when you hadn't voted is a `200` with `changed: false`, not a `404`. `400` when no cycle is open — a decided cycle can't be rewritten |
+
+**Reading is `member`; submitting and voting are `member_plus`.** A base-tier member
+sees the whole board read-only (this endpoint used to be `member_plus` router-wide,
+which meant a member landing on `/wishlist` got a 403).
+
+`GET /wishlist?state=candidate|prioritised|in_progress|shipped` filters the board.
+Unfiltered, `shipped` items sort to the bottom rather than being hidden — the
+"you asked for this, we shipped it" loop is the point of the feature.
+
+**Two cycles come back, and you need both.** `cycle` is the one accepting votes
+(`null` when none is open); `last_closed_cycle` is the most recent closed one and
+is what the winner card should read. Each carries
+`{ id, period_month, opens_at, closes_at, is_open, is_overdue, winning_item_id, winning_item_title }`.
+**Never infer open/closed from `closes_at`** — a cycle sits open past its close date
+until something closes it, which is what `is_overdue` reports. Render that as
+"closing now", never as a negative countdown.
+
+Each item carries, beyond `id / title / description / reference_video_url /
+department / state / created_at`:
+
+- **`votes`** — count for `cycle` if one is open, else for `last_closed_cycle`, so a
+  tenant between cycles still sees a real tally instead of a board of zeros.
+  When there is **no cycle at all** these are `0` because there is no window to
+  count against — hide counts in that state rather than asserting zero.
+- **`votes_all_time`**, **`voted_by_me`** and **`can_vote`**. The latter two reflect
+  the **open** cycle only: a "Voted" state sourced from a closed cycle could not be
+  undone, because un-voting needs an open cycle.
+- **The parsed request detail** — `problem`, `who_feels_pain`, `urgency`,
+  `submitter_notes`, `submitter_name`, `submitter_role`, `submitter_company`,
+  `submitted_at`. All nullable; the intake form's placeholders (`None`, `—`) arrive
+  as `null`, so render nothing rather than the placeholder. Retired taxonomy
+  ("ProductivityOS"/"DataOS") is stripped and never returned.
+- **`body_md`** — the leftover form body, sent **only when `problem` is null**.
+  It is **markdown — render it as markdown**, not as plain text. It contains only the
+  parts of the body that have no column of their own: the sections we parse (Problem,
+  Notes, Submitter), the fields we parse (Urgency, Who feels the pain), the request
+  title, placeholder-only answers, and retired taxonomy are all stripped, so it never
+  duplicates a section you're already rendering and never shows a client "None" or "—".
+  Usually null.
+- **`submit_form_url`** (top level, beside `cycle`) — the public request form.
+  **Requests are authored in ClickUp, not in the Portal**: the form writes to the
+  shared wishlist list and the item reaches the board at the next
+  `POST /internal/sync/wishlist`. Link out to it rather than POSTing from the client,
+  so every request enters through one pipeline. Null when `WISHLIST_FORM_URL` is
+  unset — render the button disabled rather than linking nowhere.
+- **`source`** — `'portal'` (typed into the Portal) or `'request_form'` (the shared
+  intake form). The ClickUp task id is deliberately never exposed.
 
 ## Reports & Sprint Pulse
 | Method | Path | Role | Body |
@@ -131,9 +179,30 @@ Each endpoint below notes the minimum role.
 | GET | `/admin/clients/:id/wishlist-items` | `{ items[] }` — the client's wishlist items (`id`, `title`, `state`, `created_at`) each with `linked_clickup_task_id` / `linked_task_name`, so you can see which prioritised items still need a Process List task attached |
 | PATCH | `/admin/clients/:id/tasks/:taskId/wishlist-source` | `{ wishlist_item_id: uuid \| null }` — state that a cached task came out of a wishlist item (surfaces on `GET /onboarding` as `source_wishlist_title`); `null` unlinks. `:taskId` is the **ClickUp** task id, not the internal uuid. `404` if the task isn't cached for this client, or if the wishlist item isn't this client's — the link is always within one tenant. Deliberately manual: nothing can match a ClickUp task to a wishlist item automatically |
 
+## Admin — voting cycles (super_admin, tenant-scoped)
+| Method | Path | Body |
+|---|---|---|
+| GET | `/admin/clients/:id/voting/cycles` | `{ cycles[] }` — each with `is_open`, `is_overdue`, `winning_item_id/_title`, `total_votes`, `voters` |
+| GET | `/admin/clients/:id/voting/cycles/:cycleId/breakdown` | `{ items[] }` — per-item vote counts for that cycle |
+| POST | `/admin/clients/:id/voting/cycles/:cycleId/close` | `{ notify?: boolean = true }` — close now: pick the winner, prioritise it, open the next cycle. **`notify: false` closes silently**, which is the intended path for a cycle that expired with no votes |
+| PATCH | `/admin/clients/:id/voting/cycles/:cycleId` | `{ closes_at }` — extend an open cycle. `400` if it's already closed or `closes_at` isn't in the future |
+| POST | `/admin/clients/:id/voting/cycles/:cycleId/reopen` | `{ closes_at }` — reopen a closed cycle and clear its recorded winner. The winning item's `state` is deliberately NOT rolled back; flip it explicitly if that's wanted |
+| POST | `/admin/clients/:id/voting/cycles` | `{ period_month?, closes_at? }` — open a cycle for a client that has none. `409` if one is already open |
+| PATCH | `/admin/clients/:id/wishlist-items/:itemId` | `{ state }` — the **only** path to `in_progress` / `shipped`; the close job only ever sets `prioritised` |
+
+All of these are scoped to the tenant in `:id`, and a cycle belonging to another
+client is a `404`. **At most one cycle can be open per tenant** (enforced by a
+partial unique index, migration `0027`).
+
 ## Not for the frontend
 `/internal/*` and `/webhooks/*` are service-role endpoints (cron / n8n / ClickUp),
 guarded by a shared secret — never call them from the browser.
+
+`POST /internal/voting/close-cycle` `{ notify?: boolean = true }` closes every due
+cycle **for every tenant**. Put it on a **daily** schedule (`0 1 * * *`), not a
+monthly one: it's idempotent and a no-op on 29 days in 30, whereas a monthly job
+that fails once silently loses a whole month. Use the tenant-scoped admin route
+above to act on a single client.
 
 ---
 

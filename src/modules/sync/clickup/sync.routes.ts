@@ -11,6 +11,7 @@ import { config } from '@config/index.js';
 import { logger } from '@infra/logger/index.js';
 import { ClickUpClient } from '@infra/clickup/client.js';
 import { syncService } from './sync.service.js';
+import { CASE_STUDY_FOLDER_ID, WISHLIST_LIST_ID } from './sync.constants.js';
 
 /**
  * Internal sync endpoints (design §10.6). Service-secret only; called by
@@ -19,13 +20,6 @@ import { syncService } from './sync.service.js';
 export const syncRoutes = Router();
 
 syncRoutes.use(requireServiceSecret);
-
-/**
- * "Case Study Library" folder. Hardcoded rather than env-configured because it
- * lives in a "Shared with me" space the service account cannot enumerate — it
- * has folder-level access only, so the folder id cannot be discovered at runtime.
- */
-const CASE_STUDY_FOLDER_ID = '90129732418';
 
 const deliveryBody = z.object({ tenant_id: z.string().uuid() });
 
@@ -85,14 +79,20 @@ syncRoutes.post(
 );
 
 const listIdBody = z.object({ list_id: z.string().min(1) });
+const optionalListIdBody = z.object({ list_id: z.string().min(1).optional() });
 
 /**
  * Sync the shared "ORG - Client - Wishlist" list into portal.wishlist_items,
  * routing each task to a tenant by its Client Group field.
+ *
+ * `list_id` is now OPTIONAL and defaults to `WISHLIST_LIST_ID`. It used to be
+ * required, which meant the id existed nowhere in this repo — only in the n8n
+ * schedule's request body — so nothing here could tell you what the wishlist
+ * actually syncs from. The override stays for one-off backfills.
  */
 syncRoutes.post(
   '/wishlist',
-  validate({ body: listIdBody }),
+  validate({ body: optionalListIdBody }),
   asyncHandler(async (req, res) => {
     if (!ClickUpClient.isConfigured()) {
       res
@@ -100,7 +100,8 @@ syncRoutes.post(
         .json(fail('CLICKUP_NOT_CONFIGURED', 'CLICKUP_API_TOKEN is not set'));
       return;
     }
-    res.status(StatusCodes.OK).json(ok(await syncService.syncWishlist(req.body.list_id)));
+    const listId = req.body.list_id ?? WISHLIST_LIST_ID;
+    res.status(StatusCodes.OK).json(ok(await syncService.syncWishlist(listId)));
   }),
 );
 

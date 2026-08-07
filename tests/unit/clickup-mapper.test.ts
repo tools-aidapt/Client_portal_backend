@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { FIELD, mapClickUpTask, extractClientGroup, type TaskBucket } from '@modules/sync/clickup/mapper.js';
+import {
+  FIELD,
+  mapClickUpTask,
+  extractClientGroup,
+  extractDisplayTitle,
+  type TaskBucket,
+} from '@modules/sync/clickup/mapper.js';
 import type { ClickUpTask } from '@infra/clickup/client.js';
 
 const statusMap = new Map<string, TaskBucket>([
@@ -127,6 +133,40 @@ describe('mapClickUpTask', () => {
       ],
     });
     expect(extractClientGroup(t)).toBe('Kenafric Group');
+  });
+});
+
+describe('extractDisplayTitle', () => {
+  // A real intake-form body (task 869edjx2q), trimmed: the fields we must not
+  // store surround the one line we do.
+  const body = [
+    '**Client group:** Kenafric Group',
+    '**Project name:** HR Recruitment Solution – Requirements & Onboarding',
+    '**Submitted by:** someone@kenafric.com',
+  ].join('\n');
+
+  it('takes the Project name line only', () => {
+    expect(extractDisplayTitle(body)).toBe('HR Recruitment Solution – Requirements & Onboarding');
+  });
+
+  it('is null for a body without the field, and for no body at all', () => {
+    expect(extractDisplayTitle('Just some notes about the process.')).toBeNull();
+    expect(extractDisplayTitle(null)).toBeNull();
+    expect(extractDisplayTitle(undefined)).toBeNull();
+    // Present but empty is nothing to show — fall back to the task name.
+    expect(extractDisplayTitle('**Project name:**   ')).toBeNull();
+  });
+
+  it('flows into the mapped row from the task body', () => {
+    const row = mapClickUpTask(task({ markdown_description: body }), {
+      tenantId: 'T1',
+      source: 'delivery',
+      statusMap,
+    });
+    expect(row.displayTitle).toBe('HR Recruitment Solution – Requirements & Onboarding');
+    // A task with no such body keeps null, so `name` stays the title.
+    expect(mapClickUpTask(task(), { tenantId: 'T1', source: 'delivery', statusMap }).displayTitle)
+      .toBeNull();
   });
 });
 

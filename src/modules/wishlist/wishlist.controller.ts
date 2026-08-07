@@ -12,7 +12,8 @@ function ctx(req: Request): { tenantId: string; userId: string } {
 export const wishlistController = {
   async list(req: Request, res: Response): Promise<void> {
     const { tenantId, userId } = ctx(req);
-    res.status(StatusCodes.OK).json(ok(await wishlistService.list(tenantId, userId)));
+    const state = req.query.state as string | undefined;
+    res.status(StatusCodes.OK).json(ok(await wishlistService.list(tenantId, userId, { state })));
   },
 
   async submit(req: Request, res: Response): Promise<void> {
@@ -35,6 +36,12 @@ export const wishlistController = {
   async vote(req: Request, res: Response): Promise<void> {
     const { tenantId, userId } = ctx(req);
     const result = await wishlistService.vote(tenantId, req.params.id!, userId);
+    res.status(StatusCodes.OK).json(ok(result));
+  },
+
+  async unvote(req: Request, res: Response): Promise<void> {
+    const { tenantId, userId } = ctx(req);
+    const result = await wishlistService.unvote(tenantId, req.params.id!, userId);
     res.status(StatusCodes.OK).json(ok(result));
   },
 };

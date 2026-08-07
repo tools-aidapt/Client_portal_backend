@@ -54,6 +54,13 @@ const envSchema = z.object({
 
   // Frontend base URL used to build invitation links (e.g. https://portal.aidapt.co).
   PORTAL_BASE_URL: z.string().url().optional(),
+  // Public process-intake form the Onboarding page links out to. If unset the
+  // portal shows the button disabled rather than linking nowhere.
+  ONBOARDING_FORM_URL: z.string().url().optional(),
+  // Public wishlist-request form the Wishlist page links out to. Submissions land
+  // in the shared ClickUp list and reach the Portal on the next wishlist sync, so
+  // the Portal never writes a request itself. Unset = the button is disabled.
+  WISHLIST_FORM_URL: z.string().url().optional(),
   // n8n webhook that sends the invitation email. If unset, invite emails are skipped.
   N8N_INVITE_WEBHOOK_URL: z.string().url().optional(),
 
