@@ -1,7 +1,61 @@
 import { pool } from '@infra/db/pool.js';
-import type { TaskBucket, TaskCacheUpsert } from './mapper.js';
+import type { ReportUpsert, TaskBucket, TaskCacheUpsert } from './mapper.js';
+import type { UseCaseUpsert } from './usecase-mapper.js';
 
 export const syncRepo = {
+  /**
+   * Upsert one case study into the tenant-agnostic use case library.
+   * `capability` is never written — the source has no capability field (see
+   * migration 0022). `is_published` is driven purely by the ClickUp
+   * Confidentiality Level, so a study that is reclassified away from 'Public'
+   * is withdrawn from the Portal on the next sync.
+   */
+  async upsertUseCase(u: UseCaseUpsert): Promise<void> {
+    await pool.query(
+      `insert into portal.use_cases
+         (slug, name, description, category, niche, build_type,
+          business_function, integration_type, problem, what_gets_built,
+          connects_to, definition_of_done, body_md,
+          source_list_name, clickup_task_id, is_published, synced_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now(), now())
+       on conflict (clickup_task_id) do update set
+         name               = excluded.name,
+         description        = excluded.description,
+         category           = excluded.category,
+         niche              = excluded.niche,
+         build_type         = excluded.build_type,
+         business_function  = excluded.business_function,
+         integration_type   = excluded.integration_type,
+         problem            = excluded.problem,
+         what_gets_built    = excluded.what_gets_built,
+         connects_to        = excluded.connects_to,
+         definition_of_done = excluded.definition_of_done,
+         body_md            = excluded.body_md,
+         source_list_name   = excluded.source_list_name,
+         is_published       = excluded.is_published,
+         synced_at          = now(),
+         updated_at         = now()`,
+      [
+        u.slug,
+        u.name,
+        u.description,
+        u.category,
+        u.niche,
+        u.buildType,
+        u.businessFunction,
+        u.integrationType,
+        u.problem,
+        u.whatGetsBuilt,
+        u.connectsTo,
+        u.definitionOfDone,
+        u.bodyMd,
+        u.sourceListName,
+        u.clickupTaskId,
+        u.isPublished,
+      ],
+    );
+  },
+
   /**
    * Status -> bucket map for a tenant, merged over the global default
    * (tenant-specific rows win). Keys are lowercased raw statuses.
@@ -30,6 +84,26 @@ export const syncRepo = {
        on conflict (tenant_id, clickup_list_id)
        do update set display_label = excluded.display_label, is_active = true`,
       [tenantId, listId, name],
+    );
+  },
+
+  /**
+   * Un-register a list that was previously mapped as a project but isn't one
+   * (see `isProjectList`). Drops its cached tasks and the mapping itself, so
+   * the Projects page and its counts stop counting delivery-ops furniture.
+   * Only touches `purpose='project'` rows — the shared onboarding mapping and
+   * anything else keyed to this list are left alone.
+   */
+  async retireProject(tenantId: string, listId: string): Promise<void> {
+    await pool.query(
+      `delete from portal.task_cache
+        where tenant_id = $1 and clickup_list_id = $2 and source = 'delivery'`,
+      [tenantId, listId],
+    );
+    await pool.query(
+      `delete from portal.clickup_list_mappings
+        where tenant_id = $1 and clickup_list_id = $2 and purpose = 'project'`,
+      [tenantId, listId],
     );
   },
 
@@ -72,14 +146,38 @@ export const syncRepo = {
     return new Map(rows.map((r) => [r.clickup_list_id, r.client_visible]));
   },
 
-  /** Active delivery/project list ids mapped for a tenant. */
+  /**
+   * Active project list ids mapped for a tenant — every list whose whole
+   * contents belong to this one client.
+   *
+   * `purpose = 'onboarding'` is deliberately NOT included. That mapping points
+   * at the shared "ORG - Client - Process List", which holds one task per client
+   * engagement across the whole workspace; `syncDelivery` ingests a list wholesale
+   * under one tenant, so including it filed every other client's engagement under
+   * whichever tenant synced last. That list is only ever ingested by
+   * `syncOnboardingRequests`, which routes each task by its "Client Group".
+   */
   async getDeliveryListIds(tenantId: string): Promise<string[]> {
     const { rows } = await pool.query<{ clickup_list_id: string }>(
       `select clickup_list_id from portal.clickup_list_mappings
-        where tenant_id = $1 and is_active = true and purpose in ('project','onboarding')`,
+        where tenant_id = $1 and is_active = true and purpose = 'project'`,
       [tenantId],
     );
     return rows.map((r) => r.clickup_list_id);
+  },
+
+  /**
+   * What a ClickUp list is mapped as, for ANY tenant ('project', 'onboarding',
+   * …), or null if no tenant has mapped it. Used by the space walk to tell a
+   * client-owned project list from a shared cross-tenant one before it ingests
+   * the whole list under a single tenant.
+   */
+  async getListPurpose(listId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ purpose: string }>(
+      `select purpose from portal.clickup_list_mappings where clickup_list_id = $1 limit 1`,
+      [listId],
+    );
+    return rows[0]?.purpose ?? null;
   },
 
   async resolveTenantByClientGroup(group: string): Promise<string | null> {
@@ -164,10 +262,10 @@ export const syncRepo = {
     await pool.query(
       `insert into portal.task_cache
          (tenant_id, clickup_task_id, source, sprint_id, clickup_list_id, list_name,
-          name, status_raw, bucket, rag, progress_pct, type_of_work, client_visible,
-          assignee_names, start_date, due_date, closed_at, url, synced_at)
+          name, status_raw, bucket, rag, progress_pct, type_of_work, parent_task_id,
+          client_visible, assignee_names, start_date, due_date, closed_at, url, synced_at)
        values ($1,$2,$3::portal.task_source,$4,$5,$6,$7,$8,$9::portal.task_bucket,
-               $10::portal.rag_status,$11,$12,$13,$14::text[],$15,$16,$17,$18, now())
+               $10::portal.rag_status,$11,$12,$13,$14,$15::text[],$16,$17,$18,$19, now())
        on conflict (clickup_task_id) do update set
          tenant_id = excluded.tenant_id,
          source = excluded.source,
@@ -180,6 +278,7 @@ export const syncRepo = {
          rag = excluded.rag,
          progress_pct = excluded.progress_pct,
          type_of_work = excluded.type_of_work,
+         parent_task_id = excluded.parent_task_id,
          client_visible = excluded.client_visible,
          assignee_names = excluded.assignee_names,
          start_date = excluded.start_date,
@@ -189,10 +288,58 @@ export const syncRepo = {
          synced_at = now()`,
       [
         t.tenantId, t.clickupTaskId, t.source, t.sprintId, t.clickupListId, t.listName,
-        t.name, t.statusRaw, t.bucket, t.rag, t.progressPct, t.typeOfWork, t.clientVisible,
-        t.assigneeNames, t.startDate, t.dueDate, t.closedAt, t.url,
+        t.name, t.statusRaw, t.bucket, t.rag, t.progressPct, t.typeOfWork, t.parentTaskId,
+        t.clientVisible, t.assigneeNames, t.startDate, t.dueDate, t.closedAt, t.url,
       ],
     );
+  },
+
+  /**
+   * Idempotent upsert of one report Doc page, keyed by clickup_page_id.
+   * Portal-native reports leave that column null (partial unique index,
+   * migration 0021) and are never touched by this. `published_by` stays null:
+   * these were published in ClickUp, not by a portal admin.
+   */
+  async upsertReportFromDoc(r: ReportUpsert): Promise<void> {
+    await pool.query(
+      `insert into portal.reports
+         (tenant_id, clickup_doc_id, clickup_page_id, title, period_start, period_end,
+          summary_md, committed_count, delivered_count, status, published_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,'published'::portal.report_status,$10)
+       on conflict (clickup_page_id) where clickup_page_id is not null
+       do update set
+         tenant_id = excluded.tenant_id,
+         clickup_doc_id = excluded.clickup_doc_id,
+         title = excluded.title,
+         period_start = excluded.period_start,
+         period_end = excluded.period_end,
+         summary_md = excluded.summary_md,
+         committed_count = excluded.committed_count,
+         delivered_count = excluded.delivered_count,
+         published_at = excluded.published_at`,
+      [
+        r.tenantId, r.clickupDocId, r.clickupPageId, r.title, r.periodStart, r.periodEnd,
+        r.summaryMd, r.committedCount, r.deliveredCount, r.publishedAt,
+      ],
+    );
+  },
+
+  /**
+   * Keep the tenant's "one published report at a time" invariant (the same one
+   * `reportsRepo.publish` maintains): the latest synced report stays published,
+   * every older one is archived. Clients still see both — `listForClient`
+   * returns published + archived — so nothing disappears. Scoped to synced rows
+   * so a portal-native published report is left alone.
+   */
+  async archiveSupersededSyncedReports(tenantId: string, docId: string): Promise<number> {
+    const { rowCount } = await pool.query(
+      `update portal.reports set status = 'archived'
+        where tenant_id = $1 and clickup_doc_id = $2 and status = 'published'
+          and period_end < (select max(period_end) from portal.reports
+                             where tenant_id = $1 and clickup_doc_id = $2)`,
+      [tenantId, docId],
+    );
+    return rowCount ?? 0;
   },
 
   // ---- sync_runs bookkeeping ----

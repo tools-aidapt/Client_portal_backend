@@ -6,6 +6,7 @@ import { validate } from '@/api/middlewares/validate.js';
 import { z } from 'zod';
 import { clientsController } from '../controllers/clients.controller.js';
 import { projectsController } from '../controllers/projects.controller.js';
+import { taskLinksController } from '../controllers/task-links.controller.js';
 import { registerClientBody, tenantIdParam } from '../validators/clients.validators.js';
 
 /**
@@ -79,4 +80,24 @@ adminClientsRoutes.patch(
     body: z.object({ is_visible: z.boolean() }),
   }),
   asyncHandler(projectsController.setVisibility),
+);
+
+// --- Wishlist → onboarding origin (which wishlist item a task came from) ---
+
+adminClientsRoutes.get(
+  '/:id/wishlist-items',
+  validate({ params: tenantIdParam }),
+  asyncHandler(taskLinksController.listWishlistItems),
+);
+
+// Keyed by ClickUp task id, not the internal task_cache uuid: the admin doing
+// this has just created the task in ClickUp and has that id in front of them.
+// `wishlist_item_id: null` unlinks — the same route corrects a mistake.
+adminClientsRoutes.patch(
+  '/:id/tasks/:taskId/wishlist-source',
+  validate({
+    params: tenantIdParam.extend({ taskId: z.string().trim().min(1).max(64) }),
+    body: z.object({ wishlist_item_id: z.string().uuid().nullable() }),
+  }),
+  asyncHandler(taskLinksController.setWishlistSource),
 );

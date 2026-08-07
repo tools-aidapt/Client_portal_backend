@@ -183,6 +183,49 @@ export const authRepo = {
   },
 
   /**
+   * Store a freshly issued OTP code. Any previously issued, still-live codes
+   * for the user are consumed first so only the latest one is ever valid.
+   */
+  async createOtpCode(userId: string, codeHash: string, expiresAt: Date): Promise<void> {
+    await withTransaction(async (client) => {
+      await client.query(
+        `update core.otp_codes set consumed_at = now()
+          where user_id = $1 and consumed_at is null`,
+        [userId],
+      );
+      await client.query(
+        `insert into core.otp_codes (user_id, code_hash, expires_at) values ($1, $2, $3)`,
+        [userId, codeHash, expiresAt],
+      );
+    });
+  },
+
+  /** The user's current live (unconsumed, unexpired) OTP code, if any. */
+  async findActiveOtpCode(
+    userId: string,
+  ): Promise<{ id: string; codeHash: string; attempts: number } | null> {
+    const { rows } = await pool.query<{ id: string; code_hash: string; attempts: number }>(
+      `select id, code_hash, attempts from core.otp_codes
+        where user_id = $1 and consumed_at is null and expires_at > now()
+        order by created_at desc
+        limit 1`,
+      [userId],
+    );
+    const row = rows[0];
+    return row ? { id: row.id, codeHash: row.code_hash, attempts: row.attempts } : null;
+  },
+
+  /** Record a failed verification attempt against an OTP code. */
+  async incrementOtpAttempts(id: string): Promise<void> {
+    await pool.query(`update core.otp_codes set attempts = attempts + 1 where id = $1`, [id]);
+  },
+
+  /** Mark an OTP code used so it can't be replayed. */
+  async consumeOtpCode(id: string): Promise<void> {
+    await pool.query(`update core.otp_codes set consumed_at = now() where id = $1`, [id]);
+  },
+
+  /**
    * Authorization claims for a user: platform-admin flag + active tenant roles.
    * Embedded into the access token at sign-in / refresh.
    */

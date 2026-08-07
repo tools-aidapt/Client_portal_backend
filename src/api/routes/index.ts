@@ -6,6 +6,7 @@ import { syncRoutes, clickupWebhookRoutes } from '@modules/sync/clickup/sync.rou
 import { portalRoutes } from '@modules/portal/portal.routes.js';
 import { wishlistRoutes, votingRoutes } from '@modules/wishlist/wishlist.routes.js';
 import { reportsRoutes } from '@modules/reports/reports.routes.js';
+import { useCasesRoutes } from '@modules/usecases/usecases.routes.js';
 import {
   adminAutomationRoutes,
   automationHealthRoutes,
@@ -28,6 +29,7 @@ apiRouter.use('/invitations', invitationRoutes);
 apiRouter.use('/wishlist', wishlistRoutes);
 apiRouter.use('/reports', reportsRoutes);
 apiRouter.use('/automations', automationHealthRoutes);
+apiRouter.use('/usecases', useCasesRoutes);
 
 // Admin — client lifecycle & onboarding (design §10.2)
 apiRouter.use('/admin/clients', adminClientsRoutes);

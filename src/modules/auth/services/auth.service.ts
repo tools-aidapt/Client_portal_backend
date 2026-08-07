@@ -1,7 +1,10 @@
 import { config } from '@config/index.js';
+import { logger } from '@infra/logger/index.js';
 import { UnauthorizedError } from '@common/errors/index.js';
 import { authRepo, type MeView, type ProfileFields } from '../repositories/auth.repository.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
+import { generateOtpCode, hashOtpCode, verifyOtpCode } from '../utils/otp.js';
+import { sendOtpEmail } from '../otp-email.js';
 import {
   durationToMs,
   generateRefreshToken,
@@ -95,6 +98,47 @@ export const authService = {
       : await verifyPassword(input.password, DUMMY_HASH).then(() => false);
     if (!cred || !ok) throw new UnauthorizedError('Invalid email or password');
 
+    const tokens = await issueTokens(cred.user_id, cred.email, userAgent);
+    return { userId: cred.user_id, ...tokens };
+  },
+
+  /**
+   * Request a one-time login code — the passwordless alternative to
+   * `login()`. Both remain available; the client picks per attempt.
+   * Always resolves (never reveals whether the email is registered): if it
+   * is, a code is emailed; if not, this is a silent no-op.
+   */
+  async requestOtp(email: string): Promise<void> {
+    const cred = await authRepo.findCredentialsByEmail(email);
+    if (!cred) {
+      logger.info({ email }, 'OTP requested for unknown email — ignoring');
+      return;
+    }
+    const code = generateOtpCode();
+    const expiresAt = new Date(Date.now() + config.auth.otpTtlMinutes * 60_000);
+    await authRepo.createOtpCode(cred.user_id, hashOtpCode(code), expiresAt);
+    await sendOtpEmail(cred.email, code);
+  },
+
+  /** Verify a requested OTP code and issue tokens, same as password `login()`. */
+  async verifyOtp(
+    input: { email: string; code: string },
+    userAgent?: string,
+  ): Promise<{ userId: string } & TokenPair> {
+    const invalid = () => new UnauthorizedError('Invalid or expired code');
+
+    const cred = await authRepo.findCredentialsByEmail(input.email);
+    if (!cred) throw invalid();
+
+    const otp = await authRepo.findActiveOtpCode(cred.user_id);
+    if (!otp || otp.attempts >= config.auth.otpMaxAttempts) throw invalid();
+
+    if (!verifyOtpCode(input.code, otp.codeHash)) {
+      await authRepo.incrementOtpAttempts(otp.id);
+      throw invalid();
+    }
+
+    await authRepo.consumeOtpCode(otp.id);
     const tokens = await issueTokens(cred.user_id, cred.email, userAgent);
     return { userId: cred.user_id, ...tokens };
   },

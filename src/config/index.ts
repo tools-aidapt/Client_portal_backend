@@ -26,6 +26,8 @@ export const config = {
     accessTtl: env.JWT_ACCESS_TTL,
     refreshTtl: env.JWT_REFRESH_TTL,
     bcryptRounds: env.BCRYPT_ROUNDS,
+    otpTtlMinutes: env.OTP_TTL_MINUTES,
+    otpMaxAttempts: env.OTP_MAX_ATTEMPTS,
   },
   supabase: {
     url: env.SUPABASE_URL,
@@ -44,14 +46,16 @@ export const config = {
     spaceIds: env.CLICKUP_SPACE_IDS
       ? env.CLICKUP_SPACE_IDS.split(',').map((s) => s.trim()).filter(Boolean)
       : [],
+    teamId: env.CLICKUP_TEAM_ID,
   },
   web: {
     portalBaseUrl: env.PORTAL_BASE_URL,
   },
   n8n: {
     inviteWebhookUrl: env.N8N_INVITE_WEBHOOK_URL,
+    otpWebhookUrl: env.N8N_OTP_WEBHOOK_URL,
   },
 } as const;
 
 export type Config = typeof config;
-export { env } from './env.js';
+export { env, isProduction } from './env.js';

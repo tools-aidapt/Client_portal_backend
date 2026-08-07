@@ -20,6 +20,13 @@ export const syncRoutes = Router();
 
 syncRoutes.use(requireServiceSecret);
 
+/**
+ * "Case Study Library" folder. Hardcoded rather than env-configured because it
+ * lives in a "Shared with me" space the service account cannot enumerate — it
+ * has folder-level access only, so the folder id cannot be discovered at runtime.
+ */
+const CASE_STUDY_FOLDER_ID = '90129732418';
+
 const deliveryBody = z.object({ tenant_id: z.string().uuid() });
 
 syncRoutes.post(
@@ -74,6 +81,92 @@ syncRoutes.post(
       return;
     }
     res.status(StatusCodes.OK).json(ok(await syncService.syncSpaces(spaceIds)));
+  }),
+);
+
+const listIdBody = z.object({ list_id: z.string().min(1) });
+
+/**
+ * Sync the shared "ORG - Client - Wishlist" list into portal.wishlist_items,
+ * routing each task to a tenant by its Client Group field.
+ */
+syncRoutes.post(
+  '/wishlist',
+  validate({ body: listIdBody }),
+  asyncHandler(async (req, res) => {
+    if (!ClickUpClient.isConfigured()) {
+      res
+        .status(StatusCodes.SERVICE_UNAVAILABLE)
+        .json(fail('CLICKUP_NOT_CONFIGURED', 'CLICKUP_API_TOKEN is not set'));
+      return;
+    }
+    res.status(StatusCodes.OK).json(ok(await syncService.syncWishlist(req.body.list_id)));
+  }),
+);
+
+const useCasesBody = z.object({ folder_id: z.string().min(1).optional() });
+
+/**
+ * Sync the "Case Study Library" folder into portal.use_cases (tenant-agnostic).
+ * Defaults to folder 90129732418; override with `folder_id`. Only studies whose
+ * ClickUp Confidentiality Level is 'Public' are published to clients.
+ */
+syncRoutes.post(
+  '/usecases',
+  validate({ body: useCasesBody }),
+  asyncHandler(async (req, res) => {
+    if (!ClickUpClient.isConfigured()) {
+      res
+        .status(StatusCodes.SERVICE_UNAVAILABLE)
+        .json(fail('CLICKUP_NOT_CONFIGURED', 'CLICKUP_API_TOKEN is not set'));
+      return;
+    }
+    const folderId = req.body.folder_id ?? CASE_STUDY_FOLDER_ID;
+    res.status(StatusCodes.OK).json(ok(await syncService.syncUseCases(folderId)));
+  }),
+);
+
+/**
+ * Sync the shared "ORG - Client - Process List" (engagement/onboarding intake
+ * submissions) into task_cache, routing each task by its Client Group field.
+ */
+syncRoutes.post(
+  '/onboarding',
+  validate({ body: listIdBody }),
+  asyncHandler(async (req, res) => {
+    if (!ClickUpClient.isConfigured()) {
+      res
+        .status(StatusCodes.SERVICE_UNAVAILABLE)
+        .json(fail('CLICKUP_NOT_CONFIGURED', 'CLICKUP_API_TOKEN is not set'));
+      return;
+    }
+    res.status(StatusCodes.OK).json(ok(await syncService.syncOnboardingRequests(req.body.list_id)));
+  }),
+);
+
+const reportsBody = z.object({
+  doc_id: z.string().min(1),
+  tenant_id: z.string().uuid().optional(),
+});
+
+/**
+ * Sync a client's bi-weekly status reports from their Project Pack ClickUp Doc
+ * into portal.reports. The Doc is tenant-specific, so the tenant is resolved
+ * from its parent list/folder; `tenant_id` overrides that when the parent isn't
+ * mapped yet.
+ */
+syncRoutes.post(
+  '/reports',
+  validate({ body: reportsBody }),
+  asyncHandler(async (req, res) => {
+    if (!ClickUpClient.isConfigured()) {
+      res
+        .status(StatusCodes.SERVICE_UNAVAILABLE)
+        .json(fail('CLICKUP_NOT_CONFIGURED', 'CLICKUP_API_TOKEN is not set'));
+      return;
+    }
+    const result = await syncService.syncReports(req.body.doc_id, req.body.tenant_id);
+    res.status(StatusCodes.OK).json(ok(result));
   }),
 );
 

@@ -1,17 +1,51 @@
-import type { ClickUpCustomField, ClickUpTask } from '@infra/clickup/client.js';
+import type { ClickUpCustomField, ClickUpDocPage, ClickUpTask } from '@infra/clickup/client.js';
 
 /**
- * Custom-field NAMES expected on ClickUp tasks. These reflect the Aidapt
- * Delivery board convention — confirm against the real workspace and adjust
- * here if the field labels differ.
+ * Custom-field IDs on the Aidapt ClickUp workspace (9012897228). These are
+ * workspace-level "team fields" — the same id is reused across every list in
+ * Delivery and Sprint, and it survives a rename. Matching on the visible NAME
+ * used to silently break the sync whenever someone relabelled a field (which is
+ * how `Type of Work` → `Type of Work (Phoenix)` zeroed out type_of_work), so
+ * match on id only.
+ *
+ * Note `progress` points at "Progress %" (type `automatic_progress`, ClickUp's
+ * computed roll-up), NOT the similarly-named "Progress" drop-down
+ * (2ec4b065-00f3-4987-bdef-030545e75a7e), which holds At Risk/On Track/Achieved
+ * — a health label, not a percentage.
  */
 export const FIELD = {
-  clientVisible: 'Client Visible',
-  typeOfWork: 'Type of Work',
-  rag: 'RAG',
-  progress: 'Progress',
-  clientGroup: 'Client Group',
+  clientVisible: '51ff3b8c-ba61-42e6-b3c0-1a2ab9c713cc',
+  typeOfWork: '8d4da5dc-7505-48cc-ba3e-a48bf1fd37af', // "Type of Work (Phoenix)"
+  rag: '65bab230-bcb1-4c9d-9cad-7d27eb0941af',
+  progress: '976d84ed-390c-45bb-ba5c-497db2e45eec', // "Progress %"
+  clientGroup: '6dbb293b-16a6-4c8c-aa7b-21203d2cdb8a',
 } as const;
+
+/**
+ * Lists that live inside a client folder but are NOT client projects. Every
+ * client folder carries the same delivery-ops furniture — an internal
+ * onboarding/offboarding checklist, a wishlist feed, a reports folder — and
+ * none of it belongs on the client's Projects page.
+ *
+ * Excluded by name (matched case-insensitively, trimmed) rather than by a
+ * name-prefix allowlist, so a project whose list is named off-convention still
+ * shows up instead of silently vanishing. Note the client-facing wishlist and
+ * onboarding pages read their own sources (`portal.wishlist_items` and the
+ * shared "ORG - Client - Process List"), so excluding these costs them nothing.
+ */
+const NON_PROJECT_LISTS = new Set([
+  'onboarding',
+  'offboarding',
+  'monthly progress reports',
+]);
+
+/** Whether a ClickUp list inside a client folder is a real client project. */
+export function isProjectList(listName: string): boolean {
+  const n = listName.trim().toLowerCase();
+  // Per-client wishlist lists are named "<CODE> - Wishlist" (e.g. "KEN - Wishlist").
+  if (n.endsWith('wishlist')) return false;
+  return !NON_PROJECT_LISTS.has(n);
+}
 
 export type TaskSource = 'delivery' | 'sprint';
 export type TaskBucket = 'delivered' | 'in_progress' | 'upcoming';
@@ -31,6 +65,7 @@ export interface TaskCacheUpsert {
   rag: Rag | null;
   progressPct: number | null;
   typeOfWork: string | null;
+  parentTaskId: string | null;
   clientVisible: boolean;
   assigneeNames: string[];
   startDate: string | null; // YYYY-MM-DD
@@ -39,8 +74,8 @@ export interface TaskCacheUpsert {
   url: string | null;
 }
 
-function fieldByName(task: ClickUpTask, name: string): ClickUpCustomField | undefined {
-  return task.custom_fields?.find((f) => f.name.toLowerCase() === name.toLowerCase());
+function fieldById(task: ClickUpTask, id: string): ClickUpCustomField | undefined {
+  return task.custom_fields?.find((f) => f.id === id);
 }
 
 /** Resolve a drop_down/labels field's selected value to its option name. */
@@ -60,9 +95,20 @@ function boolField(field: ClickUpCustomField | undefined): boolean {
   return field.value === true || field.value === 'true' || field.value === 1 || field.value === '1';
 }
 
-function numberField(field: ClickUpCustomField | undefined): number | null {
+/**
+ * Percentage out of a progress field. ClickUp's `automatic_progress` type
+ * carries a nested object (`{ percent_complete: 80 }`) rather than a scalar, so
+ * unwrap that first; a plain number/string is still accepted in case the field
+ * is ever swapped for a manual one.
+ */
+function percentField(field: ClickUpCustomField | undefined): number | null {
   if (!field || field.value == null || field.value === '') return null;
-  const n = Number(field.value);
+  const raw =
+    typeof field.value === 'object'
+      ? (field.value as { percent_complete?: unknown }).percent_complete
+      : field.value;
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
   return Number.isFinite(n) ? n : null;
 }
 
@@ -115,10 +161,11 @@ export function mapClickUpTask(
     name: task.name,
     statusRaw,
     bucket,
-    rag: normalizeRag(dropdownName(fieldByName(task, FIELD.rag))),
-    progressPct: numberField(fieldByName(task, FIELD.progress)),
-    typeOfWork: dropdownName(fieldByName(task, FIELD.typeOfWork)),
-    clientVisible: boolField(fieldByName(task, FIELD.clientVisible)),
+    rag: normalizeRag(dropdownName(fieldById(task, FIELD.rag))),
+    progressPct: percentField(fieldById(task, FIELD.progress)),
+    typeOfWork: dropdownName(fieldById(task, FIELD.typeOfWork)),
+    parentTaskId: task.parent ?? null,
+    clientVisible: boolField(fieldById(task, FIELD.clientVisible)),
     assigneeNames: (task.assignees ?? [])
       .map((a) => a.username ?? a.email)
       .filter((x): x is string => Boolean(x)),
@@ -131,5 +178,254 @@ export function mapClickUpTask(
 
 /** Extract the raw "Client Group" value from a task (used to resolve tenant). */
 export function extractClientGroup(task: ClickUpTask): string | null {
-  return dropdownName(fieldByName(task, FIELD.clientGroup));
+  return dropdownName(fieldById(task, FIELD.clientGroup));
+}
+
+/** Whether a task's "Client Visible" checkbox is set. */
+export function isClientVisible(task: ClickUpTask): boolean {
+  return boolField(fieldById(task, FIELD.clientVisible));
+}
+
+// ---------------------------------------------------------------------------
+// Report Doc pages -> portal.reports
+// ---------------------------------------------------------------------------
+
+/** Normalized row ready to upsert into portal.reports. */
+export interface ReportUpsert {
+  tenantId: string;
+  clickupDocId: string;
+  clickupPageId: string;
+  title: string;
+  periodStart: string; // YYYY-MM-DD
+  periodEnd: string; // YYYY-MM-DD
+  summaryMd: string | null;
+  committedCount: number | null;
+  deliveredCount: number | null;
+  publishedAt: string; // ISO timestamp
+}
+
+/**
+ * A report page is titled `Report <n>: <kind> - <DD Month YYYY>`. The number and
+ * the trailing date are the only parts we rely on — the middle varies ("Bi-Monthly
+ * Status Report" today). Sibling pages that don't match (e.g. the "Internal Status
+ * Briefing" nested under Report 3, or the Handbook templates) are not client
+ * reports and must not sync.
+ */
+const REPORT_NUMBER_RE = /^\s*Report\s+(\d+)\s*[:.]/i;
+const TRAILING_DATE_RE = /(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,})\s+(\d{4})\s*$/;
+
+const MONTHS = [
+  'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+  'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
+];
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/** Parse "02 July 2026" / "31st July 2026" -> "2026-07-02". Null if unparseable. */
+function parseLongDate(text: string): string | null {
+  const m = TRAILING_DATE_RE.exec(text);
+  if (!m) return null;
+  const day = Number(m[1]);
+  const month = MONTHS.indexOf(m[2]!.slice(0, 3).toLowerCase());
+  const year = Number(m[3]);
+  if (month < 0) return null;
+  // Reject impossible days (e.g. "31 February") by round-tripping through UTC.
+  const d = new Date(Date.UTC(year, month, day));
+  if (d.getUTCMonth() !== month || d.getUTCDate() !== day) return null;
+  return `${year}-${pad2(month + 1)}-${pad2(day)}`;
+}
+
+/** Shift a YYYY-MM-DD date by whole days, in UTC. */
+function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * The report number and the date it covers up to, or null when the page isn't a
+ * client report at all.
+ */
+export function parseReportPageTitle(name: string): { number: number; date: string } | null {
+  const num = REPORT_NUMBER_RE.exec(name);
+  if (!num) return null;
+  const date = parseLongDate(name);
+  return date ? { number: Number(num[1]), date } : null;
+}
+
+/** Split a markdown table row into trimmed cells. */
+function tableCells(line: string): string[] {
+  return line.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+}
+
+function isSeparatorRow(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((c) => /^:?-{2,}:?$/.test(c));
+}
+
+/**
+ * Committed/delivered from the report's "Action Item Tracker" table: every
+ * tracked action is a commitment, and the ones marked ✅ are delivered. This is
+ * the Doc equivalent of `reportsRepo.sprintCounts` (all sprint tasks vs. those
+ * in the `delivered` bucket).
+ *
+ * The tracker's columns are NOT stable across the series — Report 1 is
+ * `# | Action Item | Owner | Status` while Report 9 adds `Source` and `Due` —
+ * so the status column is located by header name, never by position. Other
+ * tables in the report (Risks and Issues) also carry ✅, hence scoping strictly
+ * to the tracker section and taking only its first table.
+ */
+export function parseTrackerCounts(md: string): { committed: number; delivered: number } | null {
+  const heading = /^#{1,6}[^\n]*Action Item Tracker[^\n]*$/im.exec(md);
+  if (!heading) return null;
+
+  const after = md.slice(heading.index + heading[0].length);
+  const nextHeading = /^#{1,6}\s/m.exec(after);
+  const section = nextHeading ? after.slice(0, nextHeading.index) : after;
+
+  const lines = section.split('\n').map((l) => l.trim());
+  const start = lines.findIndex((l) => l.startsWith('|'));
+  if (start < 0) return null;
+  let end = start;
+  while (end < lines.length && lines[end]!.startsWith('|')) end++;
+
+  const rows = lines.slice(start, end).map(tableCells).filter((r) => !isSeparatorRow(r));
+  const header = rows.shift();
+  if (!header || rows.length === 0) return null;
+
+  const statusCol = header.findIndex((c) => c.toLowerCase() === 'status');
+  const delivered = rows.filter((r) =>
+    (statusCol >= 0 ? (r[statusCol] ?? '') : r.join(' ')).includes('✅'),
+  ).length;
+  return { committed: rows.length, delivered };
+}
+
+/** A line that opens/continues a markdown block rather than plain paragraph text. */
+function isStructuralLine(line: string): boolean {
+  const s = line.trim();
+  return (
+    s === '' ||
+    /^[|#>]/.test(s) || // table row, heading, blockquote
+    /^([-*_])(\s*\1){2,}\s*$/.test(s) || // thematic break: ---, * * *, ___
+    /^[-*+]\s/.test(s) || // bullet / task list
+    /^\d+[.)]\s/.test(s) || // ordered list
+    /^!\[/.test(s) // standalone image
+  );
+}
+
+/**
+ * Make a ClickUp Doc page render the way the Doc actually looks.
+ *
+ * ClickUp exports each visual line as a bare newline, but in Markdown
+ * consecutive non-blank lines are ONE paragraph joined by soft breaks — so the
+ * six-line report header ("**Project:** … **Client:** … **Date:** …") renders as
+ * a single run-on sentence in any CommonMark/GFM renderer. Every report in the
+ * Kenafric pack hits this (47 line breaks across the 9).
+ *
+ * The fix is a hard break (two trailing spaces, honoured by every mainstream
+ * renderer) on every line of a plain-paragraph run except the last. Structural
+ * lines — tables, lists, headings, thematic breaks — and anything inside a
+ * fenced code block are left byte-for-byte alone. Tracking fence state matters:
+ * ClickUp already fences its pre-formatted content (the Report 2 architecture
+ * diagram ships inside a ```markdown fence), and hard-breaking inside a fence
+ * would put literal trailing spaces into the rendered code.
+ *
+ * Line endings are normalised to LF first: ClickUp sends CRLF, and a stray \r
+ * inside a GFM table delimiter cell can defeat stricter table parsers.
+ *
+ * Idempotent — re-running the sync over already-normalised text is a no-op,
+ * and it stays correct if the renderer is later switched to `breaks: true`.
+ */
+export function normalizeDocMarkdown(md: string): string {
+  const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  let fenced = false;
+  let run: string[] = [];
+
+  // Hard-break every line of the run but the last (which already ends the
+  // paragraph). Lines that already carry a hard break are left as they are.
+  const flushRun = () => {
+    if (run.length > 1) {
+      out.push(...run.map((l, i) => (i === run.length - 1 || /(\s{2}|\\)$/.test(l) ? l : `${l}  `)));
+    } else {
+      out.push(...run);
+    }
+    run = [];
+  };
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      flushRun();
+      fenced = !fenced;
+      out.push(line);
+    } else if (fenced || isStructuralLine(line)) {
+      flushRun();
+      out.push(line);
+    } else {
+      run.push(line);
+    }
+  }
+  flushRun();
+  return out.join('\n');
+}
+
+/**
+ * Map one report Doc page to a portal.reports row.
+ *
+ * `periodEnd` is the date in the page title — the date the report was issued and
+ * the last day it covers. `periodStart` is derived by the caller from the
+ * preceding report (see `deriveReportPeriods`): the Doc states its period only
+ * as prose ("Report Period: Weeks 18–19"), never as a start date.
+ *
+ * `publishedAt` is that same issue date rather than the page's ClickUp
+ * `date_created` — Reports 1–5 were backfilled into the Doc in one batch (all
+ * created ~19 May 2026), so `date_created` would misdate every early report.
+ */
+export function mapReportPage(
+  page: ClickUpDocPage,
+  ctx: { tenantId: string; docId: string; periodStart: string; periodEnd: string },
+): ReportUpsert {
+  // Counts are read from the raw export; normalisation only touches paragraph
+  // line breaks, but parsing before it keeps the two concerns independent.
+  const counts = parseTrackerCounts(page.content ?? '');
+  const summaryMd = page.content ? normalizeDocMarkdown(page.content).trim() : '';
+  return {
+    tenantId: ctx.tenantId,
+    clickupDocId: ctx.docId,
+    clickupPageId: page.id,
+    title: page.name,
+    periodStart: ctx.periodStart,
+    periodEnd: ctx.periodEnd,
+    summaryMd: summaryMd || null,
+    committedCount: counts?.committed ?? null,
+    deliveredCount: counts?.delivered ?? null,
+    publishedAt: `${ctx.periodEnd}T00:00:00.000Z`,
+  };
+}
+
+/**
+ * Order the report pages oldest-first and give each one a period.
+ *
+ * A report covers the ground since the previous one, so `periodStart` is the day
+ * after the previous report's date. The first report in the series has no
+ * predecessor — it falls back to a 14-day window, the cadence the series
+ * actually runs at (08 Mar → 22 Mar → 05 Apr → …).
+ */
+export function deriveReportPeriods(
+  pages: ClickUpDocPage[],
+): Array<{ page: ClickUpDocPage; periodStart: string; periodEnd: string }> {
+  const parsed = pages
+    .map((page) => ({ page, meta: parseReportPageTitle(page.name) }))
+    .filter((p): p is { page: ClickUpDocPage; meta: { number: number; date: string } } => p.meta !== null)
+    .sort((a, b) => a.meta.date.localeCompare(b.meta.date) || a.meta.number - b.meta.number);
+
+  return parsed.map((p, i) => {
+    const previous = parsed[i - 1]?.meta.date;
+    return {
+      page: p.page,
+      periodStart: previous ? addDays(previous, 1) : addDays(p.meta.date, -13),
+      periodEnd: p.meta.date,
+    };
+  });
 }

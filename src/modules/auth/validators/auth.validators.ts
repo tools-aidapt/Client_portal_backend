@@ -44,6 +44,18 @@ export const loginBody = z.object({
 
 export type LoginBody = z.infer<typeof loginBody>;
 
+// Passwordless sign-in — optional alternative to loginBody, not a replacement.
+export const otpRequestBody = z.object({ email });
+
+export type OtpRequestBody = z.infer<typeof otpRequestBody>;
+
+export const otpVerifyBody = z.object({
+  email,
+  code: z.string().trim().regex(/^\d{6}$/, 'Code must be 6 digits'),
+});
+
+export type OtpVerifyBody = z.infer<typeof otpVerifyBody>;
+
 export const refreshBody = z.object({
   refreshToken: z.string().trim().min(1),
 });

@@ -9,13 +9,21 @@ Auth is **self-hosted (email + password, JWT)** — issued and verified by this 
 No Supabase client / publishable key is needed on the frontend for auth.
 
 ```
-POST /auth/register  { token, password, fullName, jobTitle?, department?, phone?, avatarUrl?, interests?[] }
-                     -> { userId, accessToken, refreshToken, tokenType, expiresIn }
-POST /auth/login     { email, password }             -> { userId, accessToken, refreshToken, tokenType, expiresIn }
-POST /auth/refresh   { refreshToken }                -> { accessToken, refreshToken, tokenType, expiresIn }  (rotates)
-POST /auth/logout    { refreshToken }                -> { revoked }
+POST /auth/register    { token, password, fullName, jobTitle?, department?, phone?, avatarUrl?, interests?[] }
+                       -> { userId, accessToken, refreshToken, tokenType, expiresIn }
+POST /auth/login       { email, password }           -> { userId, accessToken, refreshToken, tokenType, expiresIn }
+POST /auth/otp/request { email }                     -> { sent: true }  (always, regardless of whether the email exists)
+POST /auth/otp/verify  { email, code }                -> { userId, accessToken, refreshToken, tokenType, expiresIn }
+POST /auth/refresh     { refreshToken }              -> { accessToken, refreshToken, tokenType, expiresIn }  (rotates)
+POST /auth/logout      { refreshToken }              -> { revoked }
 POST /auth/logout-all (Bearer)                       -> revoke all sessions
 ```
+
+**Password and OTP are both always available** — the client lets the user pick either
+per sign-in attempt; there's no per-account setting or migration between them.
+For OTP: call `/auth/otp/request` first (a 6-digit code is emailed, ~10 min TTL,
+5 attempts), then `/auth/otp/verify` with the code the user enters — it returns
+the same token pair shape as `/auth/login`.
 
 - **`accessToken`** is short-lived (~15m). Send it on every request:
   ```
@@ -67,6 +75,8 @@ Each endpoint below notes the minimum role.
 |---|---|---|---|
 | POST | `/auth/register` | public (invite-gated) | `{ token, password, fullName? }` — the invite token; email/org/role come from it → token pair |
 | POST | `/auth/login` | public | `{ email, password }` → token pair |
+| POST | `/auth/otp/request` | public | `{ email }` → `{ sent: true }` (emails a 6-digit code if the account exists) |
+| POST | `/auth/otp/verify` | public | `{ email, code }` → token pair |
 | POST | `/auth/refresh` | public | `{ refreshToken }` → rotated token pair |
 | POST | `/auth/logout` | public | `{ refreshToken }` |
 | POST | `/auth/logout-all` | any signed-in | revoke all refresh tokens |
@@ -80,11 +90,13 @@ Each endpoint below notes the minimum role.
 | Method | Path | Role | Returns |
 |---|---|---|---|
 | GET | `/dashboard` | member_plus | project counts, active sprint, LMS+Support tiles, unread count |
-| GET | `/projects` | member_plus | `{ total, buckets: { delivered[], in_progress[], upcoming[] } }` |
+| GET | `/projects` | member_plus | `{ total, projects: [{ clickup_list_id, name, status, progress_pct, phase_total, phase_done, tasks[] }] }` — one row per ClickUp list (a "project"). `tasks` are its **phases**: the top-level ClickUp tasks only ("1. Current State Discovery" … "7. Training & Handover"), each with `subtasks[]` (all descendants flattened, each tagged `depth` 1–3), `subtask_total`/`subtask_done`. `status` is derived from the phases; `progress_pct` is their average (null when no phase reports progress). Lists that aren't client projects — per-client `* - Wishlist`, `Onboarding`, `Offboarding`, `Monthly Progress Reports` — are excluded at sync time (`isProjectList`) |
 | GET | `/sprint/active` | member_plus | `{ sprint, tasks[] }` |
-| GET | `/onboarding` | member_plus | `{ tasks[], intake_form_url }` |
+| GET | `/onboarding` | member_plus | `{ tasks[], intake_form_url }`. Each task carries the usual `task_cache` fields **plus `source_wishlist_item_id`** and **`source_wishlist_title`** — set when an admin has linked this task to the wishlist item it came out of (a prioritised voting winner the Pod then scoped). The title is joined in so the UI can render "Originated from your Wishlist: …" without a second request; both fields are null on unlinked tasks, and either both are set or neither is. `intake_form_url` is still always null |
 | GET | `/pod` | member | `{ members[] }` |
 | GET | `/automations/health` | member_plus | `{ workflows[] }` — client-visible n8n workflow health |
+| GET | `/usecases` | member_plus | The **tenant-agnostic** catalogue of automations Aidapt can build, from `portal.use_cases`. **Searchable + filterable** via query params: `?q=` (free text), `?niche=`, `?category=`, `?build_type=` (each ≤120/80 chars). Returns `{ total, matched, query, facets, library[] }` — `total` is all published studies (the "of N" denominator), `matched` is the count for this search+filters, `query` echoes what was applied plus **`search_applied`** (false when `q` held nothing searchable, e.g. only punctuation — the API then returns everything rather than erroring), and `facets` gives `{ niche[], category[], build_type[] }` as `{value, count}` computed over the **search** but ignoring the dimension filters, so pill counts stay stable as you toggle them. Each library row: `{ slug, name, capability, description, category, niche, build_type, source, snippet }`. **`snippet`** is the matching passage with matched runs wrapped in `[[…]]` — deliberately plain text, not HTML, so the client highlights without `dangerouslySetInnerHTML`; null when not searching. Search is Postgres FTS over name (weight A), description (B), the facet fields (C) and the full narrative (D), with prefix matching on the last word so it works as the user types. Results are ranked by relevance when searching, else alphabetical. Currently **40 published entries**; `capability` is always null (the source has no capability field). This is NOT the client's own work — that's `/projects`. No commercial figures are ever exposed |
+| GET | `/usecases/:slug` | member_plus | One study with its full narrative, for the expanded card: the list fields plus `{ business_function, integration_type, problem, what_gets_built, connects_to[], definition_of_done, body_md }`. The four narrative sections are parsed from the ClickUp description (100% coverage on the current 40); `connects_to` is a list of systems it integrates with. `body_md` is the raw body and is only non-null when the sections failed to parse — render it verbatim as a fallback. Unpublished studies are **not addressable** — an unknown or withheld slug returns `404` |
 | GET | `/notifications` | member | `{ items[], unread }` |
 | POST | `/notifications/:id/read` | member | marks read |
 
@@ -116,6 +128,8 @@ Each endpoint below notes the minimum role.
 | GET | `/admin/clients/:id/projects` | discovered projects + visibility |
 | POST | `/admin/clients/:id/projects/discover` | pull projects from ClickUp |
 | PATCH | `/admin/clients/:id/projects/:listId` | `{ is_visible }` |
+| GET | `/admin/clients/:id/wishlist-items` | `{ items[] }` — the client's wishlist items (`id`, `title`, `state`, `created_at`) each with `linked_clickup_task_id` / `linked_task_name`, so you can see which prioritised items still need a Process List task attached |
+| PATCH | `/admin/clients/:id/tasks/:taskId/wishlist-source` | `{ wishlist_item_id: uuid \| null }` — state that a cached task came out of a wishlist item (surfaces on `GET /onboarding` as `source_wishlist_title`); `null` unlinks. `:taskId` is the **ClickUp** task id, not the internal uuid. `404` if the task isn't cached for this client, or if the wishlist item isn't this client's — the link is always within one tenant. Deliberately manual: nothing can match a ClickUp task to a wishlist item automatically |
 
 ## Not for the frontend
 `/internal/*` and `/webhooks/*` are service-role endpoints (cron / n8n / ClickUp),

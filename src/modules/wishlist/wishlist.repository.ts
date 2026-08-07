@@ -52,6 +52,27 @@ export const wishlistRepo = {
   },
 
   /**
+   * Upsert a wishlist item synced from ClickUp (ORG - Client - Wishlist), keyed
+   * by clickup_task_id. Portal-native submissions (clickup_task_id null) are
+   * never touched by this — the partial unique index only covers non-null ids.
+   */
+  async upsertFromClickUp(input: {
+    tenantId: string;
+    clickupTaskId: string;
+    title: string;
+    createdAt: string | null;
+  }): Promise<void> {
+    await pool.query(
+      `insert into portal.wishlist_items (tenant_id, clickup_task_id, title, state, created_at)
+       values ($1, $2, $3, 'candidate', coalesce($4::timestamptz, now()))
+       on conflict (clickup_task_id) where clickup_task_id is not null do update set
+         tenant_id = excluded.tenant_id,
+         title = excluded.title`,
+      [input.tenantId, input.clickupTaskId, input.title, input.createdAt],
+    );
+  },
+
+  /**
    * Cast a vote. Validates the item belongs to the caller's tenant and that the
    * tenant has an open cycle; enforces one vote per item per cycle.
    */

@@ -48,11 +48,21 @@ const envSchema = z.object({
   CLICKUP_WEBHOOK_SECRET: z.string().min(1).optional(),
   // Comma-separated ClickUp space ids the hourly pull sync walks.
   CLICKUP_SPACE_IDS: z.string().optional(),
+  // Workspace (team) id. Only the Docs API (v3) needs it — v2 task/list routes
+  // are addressed by list/folder id alone.
+  CLICKUP_TEAM_ID: z.string().min(1).optional(),
 
   // Frontend base URL used to build invitation links (e.g. https://portal.aidapt.co).
   PORTAL_BASE_URL: z.string().url().optional(),
   // n8n webhook that sends the invitation email. If unset, invite emails are skipped.
   N8N_INVITE_WEBHOOK_URL: z.string().url().optional(),
+
+  // Passwordless sign-in (alongside password login — both remain available).
+  // n8n webhook that sends the OTP email; if unset in non-production the code
+  // is logged instead so local dev doesn't need n8n wired up.
+  N8N_OTP_WEBHOOK_URL: z.string().url().optional(),
+  OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
+  OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
 });
 
 const parsed = envSchema.safeParse(process.env);

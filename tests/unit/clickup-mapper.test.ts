@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHmac } from 'node:crypto';
-import { mapClickUpTask, extractClientGroup, type TaskBucket } from '@modules/sync/clickup/mapper.js';
+import { FIELD, mapClickUpTask, extractClientGroup, type TaskBucket } from '@modules/sync/clickup/mapper.js';
 import type { ClickUpTask } from '@infra/clickup/client.js';
 
 const statusMap = new Map<string, TaskBucket>([
@@ -19,19 +19,27 @@ function task(overrides: Partial<ClickUpTask> = {}): ClickUpTask {
     url: 'https://app.clickup.com/t/abc123',
     list: { id: 'L1', name: 'Delivery' },
     assignees: [{ username: 'Asha' }, { email: 'sam@x.io' }],
+    // Fields are matched by id, so these carry the real workspace ids. Names are
+    // deliberately "wrong" (renamed, as happens in ClickUp) to prove the match
+    // no longer depends on them.
     custom_fields: [
-      { id: 'f1', name: 'Client Visible', type: 'checkbox', value: 'true' },
-      { id: 'f2', name: 'Progress', type: 'number', value: '42' },
+      { id: FIELD.clientVisible, name: 'Client Visible', type: 'checkbox', value: 'true' },
       {
-        id: 'f3',
+        id: FIELD.progress,
+        name: 'Progress % (renamed)',
+        type: 'automatic_progress',
+        value: { percent_complete: 42 },
+      },
+      {
+        id: FIELD.rag,
         name: 'RAG',
         type: 'drop_down',
         value: 'opt-amber',
         type_config: { options: [{ id: 'opt-amber', name: 'Amber' }, { id: 'opt-green', name: 'Green' }] },
       },
       {
-        id: 'f4',
-        name: 'Type of Work',
+        id: FIELD.typeOfWork,
+        name: 'Type of Work (Phoenix)',
         type: 'drop_down',
         value: 0,
         type_config: { options: [{ id: 'o1', name: 'Automation', orderindex: 0 }] },
@@ -53,6 +61,35 @@ describe('mapClickUpTask', () => {
     expect(row.startDate).toBe('2024-11-14');
     expect(row.dueDate).toBe('2024-11-15');
     expect(row.source).toBe('delivery');
+    expect(row.parentTaskId).toBeNull();
+  });
+
+  it('ignores a same-named field with a different id', () => {
+    const row = mapClickUpTask(
+      task({
+        custom_fields: [
+          // The "Progress" drop-down (a health label), not "Progress %".
+          {
+            id: '2ec4b065-00f3-4987-bdef-030545e75a7e',
+            name: 'Progress',
+            type: 'drop_down',
+            value: 'o-ontrack',
+            type_config: { options: [{ id: 'o-ontrack', name: 'On Track' }] },
+          },
+        ],
+      }),
+      { tenantId: 'T1', source: 'delivery', statusMap },
+    );
+    expect(row.progressPct).toBeNull();
+  });
+
+  it('captures the parent id on a subtask', () => {
+    const row = mapClickUpTask(task({ parent: 'parent123' }), {
+      tenantId: 'T1',
+      source: 'delivery',
+      statusMap,
+    });
+    expect(row.parentTaskId).toBe('parent123');
   });
 
   it('leaves bucket null for an unmapped status', () => {
@@ -81,7 +118,7 @@ describe('mapClickUpTask', () => {
     const t = task({
       custom_fields: [
         {
-          id: 'g',
+          id: FIELD.clientGroup,
           name: 'Client Group',
           type: 'drop_down',
           value: 'cg1',

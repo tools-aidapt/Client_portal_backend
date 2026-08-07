@@ -12,6 +12,8 @@ import {
   acceptInvitationBody,
   loginBody,
   logoutBody,
+  otpRequestBody,
+  otpVerifyBody,
   refreshBody,
   registerBody,
   updateProfileBody,
@@ -27,6 +29,18 @@ export const authRoutes = Router();
 // Credential sign-up / sign-in.
 authRoutes.post('/register', validate({ body: registerBody }), asyncHandler(authController.register));
 authRoutes.post('/login', validate({ body: loginBody }), asyncHandler(authController.login));
+
+// Passwordless sign-in — optional alternative to /login, not a replacement.
+authRoutes.post(
+  '/otp/request',
+  validate({ body: otpRequestBody }),
+  asyncHandler(authController.requestOtp),
+);
+authRoutes.post(
+  '/otp/verify',
+  validate({ body: otpVerifyBody }),
+  asyncHandler(authController.verifyOtp),
+);
 
 // Rotate a refresh token for a new token pair.
 authRoutes.post('/refresh', validate({ body: refreshBody }), asyncHandler(authController.refresh));

@@ -8,6 +8,8 @@ import type {
   AcceptInvitationBody,
   LoginBody,
   LogoutBody,
+  OtpRequestBody,
+  OtpVerifyBody,
   RefreshBody,
   RegisterBody,
   UpdateProfileBody,
@@ -23,6 +25,19 @@ export const authController = {
   async login(req: Request, res: Response): Promise<void> {
     const body = req.body as LoginBody;
     const result = await authService.login(body, req.header('user-agent') ?? undefined);
+    res.status(StatusCodes.OK).json(ok(result));
+  },
+
+  async requestOtp(req: Request, res: Response): Promise<void> {
+    const { email } = req.body as OtpRequestBody;
+    await authService.requestOtp(email);
+    // Same response whether or not the email is registered — no enumeration.
+    res.status(StatusCodes.OK).json(ok({ sent: true }));
+  },
+
+  async verifyOtp(req: Request, res: Response): Promise<void> {
+    const body = req.body as OtpVerifyBody;
+    const result = await authService.verifyOtp(body, req.header('user-agent') ?? undefined);
     res.status(StatusCodes.OK).json(ok(result));
   },
 

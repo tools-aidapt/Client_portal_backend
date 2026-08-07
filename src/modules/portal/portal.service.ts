@@ -1,22 +1,45 @@
 import { portalRepo } from './portal.repository.js';
 
-function groupByBucket(tasks: Array<Record<string, unknown>>) {
-  const buckets: Record<string, Array<Record<string, unknown>>> = {
-    delivered: [],
-    in_progress: [],
-    upcoming: [],
-  };
-  for (const t of tasks) {
-    const b = (t.bucket as string) ?? 'upcoming';
-    (buckets[b] ??= []).push(t);
-  }
-  return buckets;
+type Bucket = 'delivered' | 'in_progress' | 'upcoming';
+
+/** A project's overall status derived from its tasks: worst-case wins (any in-progress task beats all-delivered). */
+function projectStatus(tasks: Array<Record<string, unknown>>): Bucket {
+  if (tasks.length === 0) return 'upcoming';
+  const buckets = new Set(tasks.map((t) => (t.bucket as Bucket) ?? 'upcoming'));
+  if (buckets.has('in_progress')) return 'in_progress';
+  if (buckets.has('upcoming')) return 'upcoming';
+  return 'delivered';
+}
+
+/**
+ * A project's completion, averaged across its phases. Phase percentages come
+ * from ClickUp's own "Progress %" roll-up, so this is an average of averages —
+ * good enough for a headline bar, and it degrades to null (not a misleading 0)
+ * for a project whose phases carry no progress at all.
+ */
+function projectProgress(phases: Array<Record<string, unknown>>): number | null {
+  const pcts = phases
+    .map((p) => Number(p.progress_pct))
+    .filter((n) => Number.isFinite(n));
+  if (pcts.length === 0) return null;
+  return Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length);
 }
 
 export const portalService = {
   async projects(tenantId: string) {
-    const tasks = await portalRepo.deliveryTasks(tenantId);
-    return { total: tasks.length, buckets: groupByBucket(tasks) };
+    const projects = await portalRepo.projects(tenantId);
+    return {
+      total: projects.length,
+      projects: projects.map((p) => ({
+        clickup_list_id: p.clickup_list_id,
+        name: p.name,
+        status: projectStatus(p.tasks),
+        progress_pct: projectProgress(p.tasks),
+        phase_total: p.tasks.length,
+        phase_done: p.tasks.filter((t) => t.bucket === 'delivered').length,
+        tasks: p.tasks,
+      })),
+    };
   },
 
   async sprintActive(tenantId: string) {

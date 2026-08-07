@@ -1,13 +1,18 @@
-import { ClickUpClient, type ClickUpTask } from '@infra/clickup/client.js';
+import { ClickUpClient, DOC_PARENT, flattenDocPages, type ClickUpTask } from '@infra/clickup/client.js';
 import { AppError } from '@common/errors/index.js';
 import { logger } from '@infra/logger/index.js';
+import { wishlistRepo } from '@modules/wishlist/wishlist.repository.js';
 import { syncRepo } from './sync.repository.js';
 import {
+  deriveReportPeriods,
   extractClientGroup,
+  isProjectList,
   mapClickUpTask,
+  mapReportPage,
   type TaskBucket,
   type TaskSource,
 } from './mapper.js';
+import { mapCaseStudyTask, shortListName } from './usecase-mapper.js';
 
 export interface SyncResult {
   runId: string;
@@ -112,8 +117,25 @@ export const syncService = {
       const handleList = async (list: { id: string; name: string }, folderTenantId: string | null) => {
         const sprintId = await syncRepo.getActiveSprintByListId(list.id);
         if (sprintId) return ingestSprint(sprintId, list.id);
+        // A list mapped for a shared purpose (the ORG process list behind
+        // /onboarding) carries one task per client, so `ingestProject` — which
+        // files a whole list under one tenant — must never touch it: doing so
+        // put ten other clients' engagements in Kenafric's cache. Its own sync
+        // (`syncOnboardingRequests`) routes task-by-task on "Client Group".
+        // Checked before the tenant lookup, because the shared list resolves to
+        // a tenant precisely by way of that mapping.
+        const purpose = await syncRepo.getListPurpose(list.id);
+        if (purpose && purpose !== 'project') return;
         const tenantId = folderTenantId ?? (await syncRepo.resolveTenantByListId(list.id));
         if (!tenantId) return; // project not mapped to a client
+        // Delivery-ops furniture (onboarding/offboarding checklists, wishlist,
+        // reports) sits in the same folder but isn't a client project. Retire
+        // any mapping a previous run created rather than just skipping it, or
+        // stale rows keep showing on the Projects page forever.
+        if (!isProjectList(list.name)) {
+          await syncRepo.retireProject(tenantId, list.id);
+          return;
+        }
         await ingestProject(tenantId, list.id, list.name);
       };
 
@@ -231,6 +253,214 @@ export const syncService = {
       const status = skipped > 0 ? 'partial' : 'success';
       await syncRepo.finishRun(runId, status, upserted, skipped ? `${skipped} unrouted tasks` : undefined);
       return { runId, upserted, skipped, status };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await syncRepo.finishRun(runId, 'error', 0, detail);
+      throw err;
+    }
+  },
+
+  /**
+   * Sync the shared "ORG - Client - Wishlist" list into portal.wishlist_items.
+   * One list serves every client — each task routes to a tenant via its
+   * "Client Group" field, same as the sprint path. No "Client Visible" gate
+   * here: that checkbox has never actually been set on any wishlist task (it's
+   * an unused artifact of a workspace-wide custom field template, not a real
+   * curation step for this list) — gating on it would sync nothing. Voting
+   * stays portal-native; this only ever touches `title`/`clickup_task_id`,
+   * never votes/state.
+   */
+  async syncWishlist(listId: string): Promise<SyncResult> {
+    const runId = await syncRepo.startRun('wishlist', null);
+    try {
+      const client = new ClickUpClient();
+      const tasks = await client.getListTasks(listId);
+      const groupTenant = new Map<string, string | null>();
+      let upserted = 0;
+      let skipped = 0;
+
+      for (const task of tasks) {
+        const group = extractClientGroup(task);
+        const tenantId = group
+          ? (groupTenant.has(group)
+              ? groupTenant.get(group)!
+              : groupTenant.set(group, await syncRepo.resolveTenantByClientGroup(group)).get(group)!)
+          : null;
+        if (!tenantId) {
+          skipped++;
+          continue;
+        }
+        await wishlistRepo.upsertFromClickUp({
+          tenantId,
+          clickupTaskId: task.id,
+          title: task.name,
+          createdAt: task.date_created ? new Date(Number(task.date_created)).toISOString() : null,
+        });
+        upserted++;
+      }
+
+      const status = skipped > 0 ? 'partial' : 'success';
+      await syncRepo.finishRun(runId, status, upserted, skipped ? `${skipped} unrouted/hidden items` : undefined);
+      return { runId, upserted, skipped, status };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await syncRepo.finishRun(runId, 'error', 0, detail);
+      throw err;
+    }
+  },
+
+  /**
+   * Sync the shared "ORG - Client - Process List" (engagement/onboarding
+   * intake submissions) into task_cache. Same shape as syncWishlist: one list,
+   * routed per-task by "Client Group". Requires a `clickup_list_mappings` row
+   * per tenant (purpose='onboarding') pointing at this list id before the
+   * onboarding page will show anything — the sync itself doesn't need it.
+   */
+  async syncOnboardingRequests(listId: string): Promise<SyncResult> {
+    const runId = await syncRepo.startRun('onboarding', null);
+    try {
+      const client = new ClickUpClient();
+      const statusMapCache = new Map<string, Map<string, TaskBucket>>();
+      const groupTenant = new Map<string, string | null>();
+      const tasks = await client.getListTasks(listId);
+      let upserted = 0;
+      let skipped = 0;
+
+      for (const task of tasks) {
+        const group = extractClientGroup(task);
+        const tenantId = group
+          ? (groupTenant.has(group)
+              ? groupTenant.get(group)!
+              : groupTenant.set(group, await syncRepo.resolveTenantByClientGroup(group)).get(group)!)
+          : null;
+        if (!tenantId) {
+          skipped++;
+          continue;
+        }
+        let statusMap = statusMapCache.get(tenantId);
+        if (!statusMap) statusMap = statusMapCache.set(tenantId, await syncRepo.getStatusMap(tenantId)).get(tenantId)!;
+        const row = mapClickUpTask(task, { tenantId, source: 'delivery', statusMap, sprintId: null });
+        // Onboarding requests have no separate curation step (unlike projects,
+        // where an admin explicitly flips visibility) — the task's own
+        // "Client Visible" checkbox is never set here, so force it on rather
+        // than hide every submission by default.
+        row.clientVisible = true;
+        await syncRepo.upsertTask(row);
+        upserted++;
+      }
+
+      const status = skipped > 0 ? 'partial' : 'success';
+      await syncRepo.finishRun(runId, status, upserted, skipped ? `${skipped} unrouted requests` : undefined);
+      return { runId, upserted, skipped, status };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await syncRepo.finishRun(runId, 'error', 0, detail);
+      throw err;
+    }
+  },
+
+  /**
+   * Sync a client's bi-weekly status reports into portal.reports.
+   *
+   * The source is a ClickUp **Doc**, not a task list: each client's Project Pack
+   * (e.g. "KEN - RET - DOS - Project Pack", doc 8ckbtec-180492) has a
+   * "Project Updates" section whose child pages are the reports —
+   * "Report 9: Bi-Monthly Status Report - 02 July 2026" and so on, one every
+   * ~14 days.
+   *
+   * Routing follows the **per-folder-owns-a-tenant** pattern (as `ingestProject`
+   * does), not Client Group: the Doc is tenant-specific, so its own parent
+   * resolves the tenant — a list parent via its project mapping, a folder parent
+   * via `tenants.clickup_folder_id`. There is no Client Group field on a Doc.
+   *
+   * Pages that aren't reports are skipped (counted): the Handbook templates, and
+   * the "Internal Status Briefing" nested under Report 3 — internal, not for a
+   * client portal.
+   */
+  async syncReports(docId: string, tenantIdOverride?: string): Promise<SyncResult & { tenantId: string | null }> {
+    const runId = await syncRepo.startRun('reports', tenantIdOverride ?? null);
+    try {
+      const client = new ClickUpClient();
+      const doc = await client.getDoc(docId);
+
+      let tenantId = tenantIdOverride ?? null;
+      if (!tenantId && doc.parent) {
+        if (doc.parent.type === DOC_PARENT.list) {
+          tenantId = await syncRepo.resolveTenantByListId(doc.parent.id);
+        } else if (doc.parent.type === DOC_PARENT.folder) {
+          tenantId = await syncRepo.resolveTenantByFolderId(doc.parent.id);
+        }
+      }
+      if (!tenantId) {
+        throw new AppError(
+          `Doc ${docId} does not resolve to a tenant — map its parent list/folder first`,
+          400,
+          'NO_TENANT',
+        );
+      }
+
+      const pages = flattenDocPages(await client.getDocPages(docId));
+      const periods = deriveReportPeriods(pages);
+      for (const { page, periodStart, periodEnd } of periods) {
+        await syncRepo.upsertReportFromDoc(
+          mapReportPage(page, { tenantId, docId, periodStart, periodEnd }),
+        );
+      }
+      const upserted = periods.length;
+      const skipped = pages.length - upserted;
+      await syncRepo.archiveSupersededSyncedReports(tenantId, docId);
+
+      await syncRepo.finishRun(runId, 'success', upserted, skipped ? `${skipped} non-report pages` : undefined);
+      logger.info({ docId, tenantId, upserted, skipped }, 'Report doc sync complete');
+      return { runId, upserted, skipped, status: 'success', tenantId };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await syncRepo.finishRun(runId, 'error', 0, detail);
+      throw err;
+    }
+  },
+
+  /**
+   * Sync the "Case Study Library" folder into portal.use_cases.
+   *
+   * Unlike every other sync here this is TENANT-AGNOSTIC — the library is the
+   * same for every client, so there is no Client Group routing and nothing is
+   * skipped for being unroutable. `skipped` counts studies withheld because
+   * their ClickUp Confidentiality Level is not 'Public'.
+   *
+   * Walks the FOLDER's lists directly and never the parent space: the service
+   * account has folder-level access only (the space itself still returns
+   * INSUFFICIENT_ACCESS), so `getSpaceListing` would fail here.
+   */
+  async syncUseCases(folderId: string): Promise<SyncResult & { lists: number }> {
+    const runId = await syncRepo.startRun('use_cases', null);
+    try {
+      const client = new ClickUpClient();
+      const lists = await client.getFolderLists(folderId);
+      let upserted = 0;
+      let skipped = 0;
+
+      for (const list of lists) {
+        const source = shortListName(list.name);
+        const tasks = await client.getListTasks(list.id);
+        for (const task of tasks) {
+          const row = mapCaseStudyTask(task, source);
+          await syncRepo.upsertUseCase(row);
+          if (row.isPublished) upserted++;
+          else skipped++;
+        }
+      }
+
+      // Every task is stored; `skipped` are the ones held back from clients, so
+      // a run that publishes nothing is still 'success' rather than 'partial'.
+      await syncRepo.finishRun(
+        runId,
+        'success',
+        upserted,
+        skipped ? `${skipped} not Public — withheld` : undefined,
+      );
+      logger.info({ lists: lists.length, upserted, skipped }, 'Use case library sync complete');
+      return { runId, upserted, skipped, status: 'success', lists: lists.length };
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       await syncRepo.finishRun(runId, 'error', 0, detail);
