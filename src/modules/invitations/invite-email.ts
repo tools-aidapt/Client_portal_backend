@@ -4,11 +4,38 @@ import { logger } from '@infra/logger/index.js';
 import { AppError } from '@common/errors/index.js';
 
 /**
+ * Sends the invite email right now, instead of waiting for whatever drains
+ * `core.outbox` (a cron/worker that may not be running — this is exactly the
+ * gap that let real invites sit `pending` for days with nothing surfacing it).
+ *
+ * The outbox row (already written in the same transaction that created the
+ * invitation, for durability) stays as the retry safety net: this marks it
+ * `done` immediately on success so the eventual drain never re-sends it, and
+ * deliberately leaves it `pending` on failure so the normal retry-with-backoff
+ * still applies — a transient n8n outage isn't a lost invite, just a delayed
+ * one. Never throws back into the caller: the invitation itself is valid the
+ * moment its row exists, independent of whether the email has gone out yet.
+ */
+export async function sendInviteEmailNow(invitationId: string, token: string): Promise<void> {
+  try {
+    await sendInviteEmail(token);
+    await pool.query(
+      `update core.outbox set status = 'done'
+        where idempotency_key = $1 and status = 'pending'`,
+      [`email.invite:${invitationId}`],
+    );
+  } catch (err) {
+    logger.warn({ err, invitationId }, 'Immediate invite-email send failed — left pending for the outbox retry');
+  }
+}
+
+/**
  * Dispatch an invitation email via the n8n webhook. n8n owns the template and
  * delivery; we send it the recipient, the org, the role, and the registration
  * link (which carries the invite token).
  *
- * Called by the `email.invite` outbox handler, so throwing triggers a retry.
+ * Called by the `email.invite` outbox handler (the retry path) and by
+ * `sendInviteEmailNow` (the immediate path), so throwing triggers a retry.
  */
 export async function sendInviteEmail(token: string): Promise<void> {
   const { rows } = await pool.query<{

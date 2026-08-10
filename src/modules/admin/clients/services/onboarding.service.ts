@@ -1,6 +1,7 @@
 import { ConflictError } from '@common/errors/index.js';
 import { withTransaction } from '@infra/db/pool.js';
 import { logger } from '@infra/logger/index.js';
+import { sendInviteEmailNow } from '@modules/invitations/invite-email.js';
 import { onboardingRepo } from '../repositories/onboarding.repository.js';
 import type {
   RegisterClientInput,
@@ -29,7 +30,7 @@ export const onboardingService = {
     input: RegisterClientInput,
     actorId: string | null,
   ): Promise<RegisterClientResult> {
-    return withTransaction(async (client) => {
+    const result = await withTransaction(async (client) => {
       // Unique slug (append -2, -3, ... on collision).
       const base = slugify(input.name) || 'client';
       let slug = base;
@@ -128,7 +129,15 @@ export const onboardingService = {
       });
 
       logger.info({ tenantId, onboardingId, slug }, 'Client registered (internal txn committed)');
-      return { tenantId, onboardingId, slug };
+      return { tenantId, onboardingId, slug, adminInvite: invite };
     });
+
+    // Outside the transaction — an external HTTP call has no business
+    // holding a DB connection open. clickup.provision_folder / n8n.trigger_sync
+    // / storage.init stay on the pure outbox path (still stubs today); only
+    // the invite email gets this immediate-send treatment.
+    await sendInviteEmailNow(result.adminInvite.id, result.adminInvite.token);
+    const { adminInvite: _adminInvite, ...rest } = result;
+    return rest;
   },
 };
