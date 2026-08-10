@@ -68,6 +68,10 @@ const envSchema = z.object({
   WISHLIST_FORM_URL: z.string().url().optional(),
   // n8n webhook that sends the invitation email. If unset, invite emails are skipped.
   N8N_INVITE_WEBHOOK_URL: z.string().url().optional(),
+  // n8n webhook the public Wishlist form posts to (same one `POST
+  // /admin/wishlist` calls server-side for super-admin-created items). No
+  // auth on the n8n side — it's a public form endpoint.
+  N8N_WISHLIST_WEBHOOK_URL: z.string().url().optional(),
 
   // Passwordless sign-in (alongside password login — both remain available).
   // n8n webhook that sends the OTP email; if unset in non-production the code

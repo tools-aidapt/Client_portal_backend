@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { authRoutes, invitationRoutes } from '@modules/auth/routes/auth.routes.js';
 import { adminClientsRoutes } from '@modules/admin/clients/routes/clients.routes.js';
 import { adminTenantsRoutes } from '@modules/admin/tenants/routes/tenants.routes.js';
+import { adminWishlistRoutes } from '@modules/admin/wishlist/wishlist.routes.js';
 import { outboxRoutes } from '@modules/outbox/outbox.routes.js';
 import { syncRoutes, clickupWebhookRoutes } from '@modules/sync/clickup/sync.routes.js';
 import { portalRoutes } from '@modules/portal/portal.routes.js';
@@ -37,6 +38,7 @@ apiRouter.use('/admin/clients', adminClientsRoutes);
 // Tenant directory backing the Portal's admin tenant picker.
 apiRouter.use('/admin/tenants', adminTenantsRoutes);
 apiRouter.use('/admin/clients/:id/automations', adminAutomationRoutes);
+apiRouter.use('/admin/wishlist', adminWishlistRoutes);
 
 // Internal — service-role only (design §10.6)
 apiRouter.use('/internal/outbox', outboxRoutes);

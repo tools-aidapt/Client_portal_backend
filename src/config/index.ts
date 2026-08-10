@@ -59,6 +59,7 @@ export const config = {
   n8n: {
     inviteWebhookUrl: env.N8N_INVITE_WEBHOOK_URL,
     otpWebhookUrl: env.N8N_OTP_WEBHOOK_URL,
+    wishlistWebhookUrl: env.N8N_WISHLIST_WEBHOOK_URL,
   },
   crossApp: {
     lmsUrl: env.LMS_URL,
