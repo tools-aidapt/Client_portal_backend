@@ -10,7 +10,7 @@ No Supabase client / publishable key is needed on the frontend for auth.
 
 ```
 POST /auth/register    { token, password, fullName, jobTitle?, department?, phone?, avatarUrl?, interests?[] }
-                       -> { userId, accessToken, refreshToken, tokenType, expiresIn }
+                       -> { userId, email, accessToken, refreshToken, tokenType, expiresIn }
 POST /auth/login       { email, password }           -> { userId, accessToken, refreshToken, tokenType, expiresIn }
 POST /auth/otp/request { email }                     -> { sent: true }  (always, regardless of whether the email exists)
 POST /auth/otp/verify  { email, code }                -> { userId, accessToken, refreshToken, tokenType, expiresIn }
@@ -73,7 +73,7 @@ Each endpoint below notes the minimum role.
 ## Identity
 | Method | Path | Role | Body / Notes |
 |---|---|---|---|
-| POST | `/auth/register` | public (invite-gated) | `{ token, password, fullName? }` — the invite token; email/org/role come from it → token pair |
+| POST | `/auth/register` | public (invite-gated) | `{ token, password (≥8), fullName }` — the invite token; email/org/role come from it. Returns the token pair **plus `email`**, which the caller never had: the address lives on the invitation, not in anything the person typed, and the client needs it to open a session (`/auth/me` doesn't return it). Distinct failures worth surfacing verbatim: `404` invitation not found, `403` revoked, `400` expired / already used, `409` an account with that email already exists (sign in and accept instead) |
 | POST | `/auth/login` | public | `{ email, password }` → token pair |
 | POST | `/auth/otp/request` | public | `{ email }` → `{ sent: true }` (emails a 6-digit code if the account exists) |
 | POST | `/auth/otp/verify` | public | `{ email, code }` → token pair |

@@ -130,6 +130,30 @@ email is registered, to avoid leaking account existence.
   `POST /auth/register` needs the token + collects profile (fullName, jobTitle,
   department, phone, avatarUrl, interests[]). `PATCH /auth/me` edits profile.
   Profile fields added in migration `0015`.
+  - [x] **The invite link had nowhere to land — fixed 2026-08-10.** Invitation
+    emails point at `{PORTAL_BASE_URL}/register?token=…`, but the frontend had
+    **no `/register` route or page at all**, so every invite link fell through
+    the catch-all and silently redirected to `/login`. The backend endpoint was
+    real and working the whole time; nobody could reach it. This means **no
+    invited client has ever been able to accept an invitation through the
+    product** — the accounts that exist were made by `scripts/seed-test-users.ts`
+    or direct SQL, which is why the gap went unnoticed. `pages/Register.tsx` now
+    reads the token from the query string, collects full name + password, and
+    ends in a live session (never a bounce back to `/login`). It surfaces the
+    backend's own distinct wording rather than a generic failure — 404 not
+    found, 403 revoked, 400 expired/already used, 409 email already registered
+    — plus a missing-token state for a truncated link.
+    `authService.register` now also returns **`email`**: the client cannot know
+    it (the address lives on the invitation, not in anything the user typed) and
+    needs it to open a session, since `/auth/me` doesn't return it.
+    Verified live: `scripts/smoke-register.ts`, 23/23 over HTTP, account and
+    invitation deleted afterwards; plus the real form driven in a browser
+    through to a working `/dashboard` session.
+    **Run that smoke script against an isolated backend** with `LMS_URL` and
+    `SUPPORT_DESK_BACKEND_URL` pointed somewhere dead (e.g. `http://127.0.0.1:9`)
+    — registration fires `syncUserToLms`/`syncUserToSupportDesk`, so testing
+    against the normal config creates accounts in **two other teams' systems**
+    that nothing here can clean up.
   - [x] **Member management** (2026-08-07) — `GET /admin/clients/:id/members` and
     `PATCH /admin/clients/:id/members/:userId` `{ role?, status? }`. Before this
     there was no way to *see* a client's users or change anyone's role/status

@@ -67,7 +67,7 @@ export const authService = {
   async register(
     input: { token: string; password: string } & ProfileFields,
     userAgent?: string,
-  ): Promise<{ userId: string } & TokenPair> {
+  ): Promise<{ userId: string; email: string } & TokenPair> {
     const { token, password, ...profile } = input;
     const passwordHash = await hashPassword(password);
     const { userId, email, role } = await authRepo.registerViaInvitation({
@@ -81,7 +81,11 @@ export const authService = {
     void syncUserToLms({ userId, email, passwordHash, fullName: profile.fullName ?? null, role });
     void syncUserToSupportDesk({ email, fullName: profile.fullName ?? null, role });
     const tokens = await issueTokens(userId, email, userAgent);
-    return { userId, ...tokens };
+    // `email` is returned because the caller never had it: registration is
+    // invitation-gated, so the address comes from the invitation row, not from
+    // anything the person typed. The client needs it to open a session (it
+    // stores the email alongside the tokens — `/auth/me` doesn't return it).
+    return { userId, email, ...tokens };
   },
 
   /**
