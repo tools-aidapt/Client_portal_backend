@@ -46,7 +46,7 @@ export const portalService = {
   async sprintActive(tenantId: string) {
     const sprint = await portalRepo.activeSprint();
     if (!sprint) return { sprint: null, tasks: [] as Array<Record<string, unknown>> };
-    const tasks = await portalRepo.sprintTasks(tenantId, sprint.starts_on, sprint.ends_on);
+    const tasks = await portalRepo.sprintTasks(tenantId, sprint.id);
     return { sprint, tasks };
   },
 
