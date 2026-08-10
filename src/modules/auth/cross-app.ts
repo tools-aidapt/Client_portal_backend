@@ -111,12 +111,19 @@ const TARGET_URL: Record<SsoTarget, keyof typeof config.crossApp> = {
 
 /**
  * Signs the short-lived JWT Support Desk's `/auth/callback` (and, once built,
- * LMS's equivalent) expects: `{ email, target }`. 2 minutes is deliberately
- * tight — this only needs to survive one browser redirect, not sit around.
+ * LMS's equivalent) expects: `{ email, target }`.
+ *
+ * Was 2 minutes — too tight for a real browser redirect: a free/starter-tier
+ * Render service that's gone to sleep can take well over a minute just to
+ * wake up and serve its first response, on top of normal page-load and React
+ * mount time. That's a real failure a live click-through hit, not a
+ * hypothetical — 5 minutes gives real-world latency (including a cold start)
+ * genuine room, while still being short-lived enough that a leaked token in
+ * a browser history entry is stale within minutes.
  */
 export function signSsoToken(email: string, target: SsoTarget): string | null {
   if (!config.crossApp.redirectTokenSecret) return null;
-  return jwt.sign({ email, target }, config.crossApp.redirectTokenSecret, { expiresIn: '2m' });
+  return jwt.sign({ email, target }, config.crossApp.redirectTokenSecret, { expiresIn: '5m' });
 }
 
 /**
