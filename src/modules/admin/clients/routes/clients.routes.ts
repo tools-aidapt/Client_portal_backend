@@ -46,7 +46,7 @@ adminClientsRoutes.post(
     body: z.object({
       email: z.string().trim().toLowerCase().email(),
       // Platform admin may grant any role, including super_admin (platform staff).
-      role: z.enum(['member', 'member_plus', 'member_pro', 'org_admin', 'super_admin']).default('member'),
+      role: z.enum(['member', 'admin', 'super_admin']).default('member'),
     }),
   }),
   asyncHandler(clientsController.inviteUser),

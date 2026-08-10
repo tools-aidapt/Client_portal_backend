@@ -53,7 +53,7 @@ export const onboardingRepo = {
   ): Promise<void> {
     await client.query(
       `insert into core.tenant_email_domains (tenant_id, domain, default_role, auto_join)
-       select $1, unnest($2::text[]), 'member_plus', true
+       select $1, unnest($2::text[]), 'member', true
        on conflict (domain) do nothing`,
       [tenantId, domains],
     );
@@ -102,7 +102,7 @@ export const onboardingRepo = {
     // The first client contact becomes the org admin, who can then invite their team.
     const { rows } = await client.query<{ id: string; token: string }>(
       `insert into core.invitations (tenant_id, email, role, invited_by)
-       values ($1, $2, 'org_admin', $3)
+       values ($1, $2, 'admin', $3)
        returning id, token`,
       [tenantId, email, invitedBy],
     );

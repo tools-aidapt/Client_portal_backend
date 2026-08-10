@@ -14,7 +14,7 @@ declare global {
       /** Active tenant context, resolved by `requireTenantRole`. */
       tenant?: {
         id: string;
-        role: 'member' | 'member_plus' | 'member_pro' | 'org_admin' | 'super_admin';
+        role: 'member' | 'admin' | 'super_admin';
       };
     }
   }

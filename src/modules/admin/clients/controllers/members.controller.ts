@@ -3,6 +3,7 @@ import { StatusCodes } from 'http-status-codes';
 import { NotFoundError } from '@common/errors/index.js';
 import { ok } from '@common/utils/api-response.js';
 import { membersRepo } from '../repositories/members.repository.js';
+import { syncUserToLms, syncUserToSupportDesk } from '@modules/auth/cross-app.js';
 import type { UpdateMemberBody } from '../validators/clients.validators.js';
 
 /**
@@ -23,6 +24,31 @@ export const membersController = {
     const body = req.body as UpdateMemberBody;
     const member = await membersRepo.update(req.params.id!, req.params.userId!, body);
     if (!member) throw new NotFoundError('That person is not a member of this client');
+
+    // Push the new role to the sibling apps. Registration was previously the
+    // ONLY thing that ever synced a role, so promoting someone here left them
+    // stuck at whatever they were first invited as in LMS/Support Desk —
+    // forever, and silently. Best-effort and non-blocking, exactly like the
+    // registration-time sync: the Portal membership is authoritative whether
+    // or not the other two are reachable.
+    if (body.role && member.email) {
+      const passwordHash = await membersRepo.passwordHash(member.user_id);
+      if (passwordHash) {
+        void syncUserToLms({
+          userId: member.user_id,
+          email: member.email,
+          passwordHash,
+          fullName: member.full_name,
+          role: member.role,
+        });
+      }
+      void syncUserToSupportDesk({
+        email: member.email,
+        fullName: member.full_name,
+        role: member.role,
+      });
+    }
+
     res.status(StatusCodes.OK).json(ok(member));
   },
 };

@@ -82,7 +82,7 @@ export const automationRepo = {
        select $1, m.user_id, 'automation_error', 'An automation reported an error', $2::text, '/automations/health'
          from core.memberships m
         where m.tenant_id = $1 and m.status = 'active'
-          and m.role in ('member_plus','member_pro','org_admin','super_admin')`,
+          and m.role in ('admin','super_admin')`,
       [tenantId, workflowName],
     );
   },

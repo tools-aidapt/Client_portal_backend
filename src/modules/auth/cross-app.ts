@@ -15,17 +15,19 @@ import { logger } from '@infra/logger/index.js';
  */
 
 /**
- * LMS's own POST /auth/register only ever accepts 'super_admin' or 'member'
- * (confirmed directly in its controller — there is no 'admin' option for this
- * specific sync endpoint, even though the app has an 'admin' tier elsewhere).
- * Every client-side Portal role collapses to LMS 'member'; only a Portal
- * `super_admin` (Aidapt staff) maps to LMS 'super_admin'.
+ * Portal roles are now 1:1 with the LMS's own vocabulary, so this is an
+ * identity map kept only to make the contract explicit at the boundary.
+ *
+ * It used to collapse: the three `member_*` tiers all became LMS 'member', and
+ * `org_admin` mapped to an 'admin' that the LMS's register endpoint rejected
+ * outright (400), so a client's own admin could never be provisioned there —
+ * later worked around by demoting them to 'member', which lost the distinction
+ * entirely. Both problems are gone now that the vocabularies match; the LMS
+ * allowlist was widened to accept 'admin' in the same change.
  */
-const LMS_ROLE: Record<string, 'member' | 'super_admin'> = {
+const LMS_ROLE: Record<string, 'member' | 'admin' | 'super_admin'> = {
   member: 'member',
-  member_plus: 'member',
-  member_pro: 'member',
-  org_admin: 'member',
+  admin: 'admin',
   super_admin: 'super_admin',
 };
 
@@ -71,7 +73,7 @@ export async function syncUserToLms(params: {
  * Aidapt platform staff, not a Support Desk agent; granting desk access is a
  * separate, deliberate action, not an automatic side effect of registration.
  */
-const SD_SYNCABLE_ROLES = new Set(['member', 'member_plus', 'member_pro', 'org_admin']);
+const SD_SYNCABLE_ROLES = new Set(['member', 'admin']);
 
 export async function syncUserToSupportDesk(params: {
   email: string;

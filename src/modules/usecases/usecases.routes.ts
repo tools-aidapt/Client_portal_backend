@@ -18,7 +18,7 @@ export const useCasesRoutes = Router();
 
 useCasesRoutes.use(authenticate);
 
-const plus = requireTenantRole('member_plus');
+const admin = requireTenantRole('admin');
 
 /**
  * `q` is free text (sanitised into a tsquery in the service, never interpolated).
@@ -32,10 +32,10 @@ const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(MAX_LIMIT).optional(),
 });
 
-useCasesRoutes.get('/', plus, validate({ query: listQuery }), asyncHandler(useCasesController.list));
+useCasesRoutes.get('/', admin, validate({ query: listQuery }), asyncHandler(useCasesController.list));
 useCasesRoutes.get(
   '/:slug',
-  plus,
+  admin,
   validate({ params: z.object({ slug: z.string().min(1).max(64) }) }),
   asyncHandler(useCasesController.detail),
 );
