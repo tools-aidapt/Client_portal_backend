@@ -153,20 +153,25 @@ export const portalRepo = {
    * timezone (verified against the live DB — server `UTC`, client `UTC+5`,
    * bounds still resolved to 2026-07-26 / 2026-08-09).
    */
-  async sprintTasks(
-    tenantId: string,
-    startsOn: string | Date | null,
-    endsOn: string | Date | null,
-  ): Promise<Array<Record<string, unknown>>> {
-    if (!startsOn || !endsOn) return [];
+  /**
+   * Every task actually in the sprint's own ClickUp list, routed to this
+   * tenant by Client Group — not a due-date guess. Tried due-date-matched
+   * `delivery` tasks first, but a real tenant can genuinely have zero tasks
+   * due in a given two-week window even with real sprint-list tasks sitting
+   * right there, which read as "sprint is empty" when it wasn't. No
+   * `client_visible` filter either: the same "Client Visible" checkbox that's
+   * unset on every Wishlist/Process-List submission (see sync.service.ts) is
+   * unset here too — treating it as "not curated yet" rather than
+   * "deliberately hidden" is the same call already made for those.
+   */
+  async sprintTasks(tenantId: string, sprintId: string | null): Promise<Array<Record<string, unknown>>> {
+    if (!sprintId) return [];
     const { rows } = await pool.query(
       `select ${TASK_COLUMNS}
          from portal.task_cache tc
-        where tc.tenant_id = $1 and tc.source = 'delivery'
-          and tc.client_visible = true
-          and tc.due_date between $2::date and $3::date
+        where tc.tenant_id = $1 and tc.source = 'sprint' and tc.sprint_id = $2
         order by tc.due_date nulls last, tc.name`,
-      [tenantId, startsOn, endsOn],
+      [tenantId, sprintId],
     );
     return rows;
   },
