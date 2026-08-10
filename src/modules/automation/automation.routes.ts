@@ -50,7 +50,7 @@ export const automationHealthRoutes = Router();
 automationHealthRoutes.get(
   '/health',
   authenticate,
-  requireTenantRole('member_plus'),
+  requireTenantRole('admin'),
   asyncHandler(async (req, res) => {
     if (!req.tenant) throw new UnauthorizedError();
     res.status(StatusCodes.OK).json(ok(await automationService.clientHealth(req.tenant.id)));

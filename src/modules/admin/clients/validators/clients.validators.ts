@@ -41,7 +41,7 @@ export const updateClientBody = z
  * on `POST /admin/clients/:id/invitations`, whose own validator still allows
  * it as the one deliberate path.
  */
-export const TENANT_ROLES = ['member', 'member_plus', 'member_pro', 'org_admin'] as const;
+export const TENANT_ROLES = ['member', 'admin'] as const;
 
 /**
  * A role a tenant-scoped endpoint may set. Rejects `super_admin` by name

@@ -99,11 +99,11 @@ invitationRoutes.post(
 invitationRoutes.post(
   '/',
   authenticate,
-  requireTenantRole('org_admin'),
+  requireTenantRole('admin'),
   validate({
     body: z.object({
       email: z.string().trim().toLowerCase().email(),
-      role: z.enum(['member', 'member_plus', 'member_pro', 'org_admin']).default('member'),
+      role: z.enum(['member', 'admin']).default('member'),
     }),
   }),
   asyncHandler(invitationsController.inviteToMyOrg),

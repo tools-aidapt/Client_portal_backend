@@ -20,7 +20,7 @@ export interface CloseCycleSummary {
 }
 
 /**
- * Who hears about a voting event: `member_plus` and above.
+ * Who hears about a voting event: `admin` and above.
  *
  * Not every active member — plain `member` can read the board but cannot vote, so
  * telling them "voting results are in" invites an action they don't have. The old
@@ -39,7 +39,7 @@ async function notifyVoters(
        from core.memberships m
       where m.tenant_id = $1
         and m.status = 'active'
-        and m.role in ('member_plus','member_pro','org_admin','super_admin')`,
+        and m.role in ('admin','super_admin')`,
     [tenantId, type, title, body],
   );
   return rowCount ?? 0;

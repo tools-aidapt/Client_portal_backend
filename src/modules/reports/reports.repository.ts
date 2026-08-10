@@ -163,7 +163,7 @@ export const reportsRepo = {
          select $1, m.user_id, 'report_published'::core.notification_type,
                 'A new report has been published', $2::text
            from core.memberships m
-          where m.tenant_id = $1 and m.status = 'active' and m.role = 'member_pro'`,
+          where m.tenant_id = $1 and m.status = 'active' and m.role in ('admin','super_admin')`,
         [report.tenant_id, `/reports/${id}`],
       );
 

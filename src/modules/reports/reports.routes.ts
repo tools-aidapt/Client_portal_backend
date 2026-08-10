@@ -15,7 +15,7 @@ export const reportsRoutes = Router();
 
 reportsRoutes.use(authenticate);
 
-const proOnly = requireTenantRole('member_pro');
+const adminOnly = requireTenantRole('admin');
 const idParam = z.object({ id: z.string().uuid() });
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD');
 
@@ -46,22 +46,22 @@ reportsRoutes.post(
 );
 
 // --- MemberPro: list, detail, pulse ---
-reportsRoutes.get('/', proOnly, asyncHandler(reportsController.list));
+reportsRoutes.get('/', adminOnly, asyncHandler(reportsController.list));
 
-reportsRoutes.get('/:id', proOnly, validate({ params: idParam }), asyncHandler(reportsController.get));
+reportsRoutes.get('/:id', adminOnly, validate({ params: idParam }), asyncHandler(reportsController.get));
 
 // Before /:id would be fine either way (distinct paths), but keeping the PDF
 // route beside the detail it derives from keeps the file readable.
 reportsRoutes.get(
   '/:id/pdf',
-  proOnly,
+  adminOnly,
   validate({ params: idParam }),
   asyncHandler(reportsController.downloadPdf),
 );
 
 reportsRoutes.post(
   '/:id/pulse',
-  proOnly,
+  adminOnly,
   validate({
     params: idParam,
     body: z.object({

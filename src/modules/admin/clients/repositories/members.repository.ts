@@ -74,4 +74,18 @@ export const membersRepo = {
     );
     return rows[0] ?? null;
   },
+
+  /**
+   * The stored bcrypt hash, needed only to re-push a role change to the LMS:
+   * its `POST /auth/register` is an upsert that requires `password_hash` on
+   * every call, and the Portal owns the credential (the LMS writes the hash
+   * verbatim, never re-hashing it). Never leaves the server.
+   */
+  async passwordHash(userId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ password_hash: string }>(
+      `select password_hash from core.user_credentials where user_id = $1`,
+      [userId],
+    );
+    return rows[0]?.password_hash ?? null;
+  },
 };

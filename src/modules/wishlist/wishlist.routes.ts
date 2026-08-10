@@ -25,7 +25,7 @@ export const wishlistRoutes = Router();
 wishlistRoutes.use(authenticate);
 
 const canRead = requireTenantRole('member');
-const canVote = requireTenantRole('member_plus');
+const canVote = requireTenantRole('admin');
 
 wishlistRoutes.get(
   '/',
