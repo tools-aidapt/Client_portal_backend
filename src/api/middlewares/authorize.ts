@@ -7,17 +7,14 @@ import { config } from '@config/index.js';
 /**
  * Requires the caller to be an Aidapt platform admin (super_admin).
  *
- * Fast path: the `platform_admin` claim stamped by the custom access token
- * hook. Fallback: a direct `core.profiles` lookup, so admin endpoints work
- * even before the hook is enabled in the dashboard.
+ * Read from `core.profiles` on every call, never from the token's
+ * `platform_admin` claim: the claim is frozen at sign-in, so trusting it kept
+ * staff privileges alive for the token's remaining lifetime after the flag was
+ * revoked. Same reasoning as `resolveRoles` in tenant.ts, and it matters more
+ * here — this is the highest-privilege gate in the app.
  */
 export const requirePlatformAdmin: RequestHandler = asyncHandler(async (req, _res, next) => {
   if (!req.auth) throw new UnauthorizedError();
-
-  const claim = (req.auth.user.app_metadata as { platform_admin?: boolean } | undefined)
-    ?.platform_admin;
-
-  if (claim === true) return next();
 
   const { rows } = await pool.query<{ is_platform_admin: boolean }>(
     'select is_platform_admin from core.profiles where id = $1',

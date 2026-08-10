@@ -10,28 +10,41 @@ interface Resolved {
 }
 
 /**
- * Resolve the caller's tenant roles. Fast path: the JWT claims stamped by the
- * access token hook. Fallback: core.memberships / core.profiles (so this works
- * before the hook is enabled).
+ * Resolve the caller's tenant roles from `core.memberships` — the live record,
+ * deliberately NOT the `tenant_roles` claim in the access token.
+ *
+ * The claim is stamped when the token is issued and then frozen for the token's
+ * whole lifetime, so changing someone's role left the app answering on the old
+ * one until they signed in again. That is not just stale, it is *incoherently*
+ * stale: `/auth/me` reads the database, so the Portal drew the navigation for
+ * the new role while every request behind it was still judged on the old one.
+ * Promoting a Tile & Carpet Centre user to `admin` gave them the Onboarding page
+ * with "Requires role admin" printed on it. A demotion has the same shape and
+ * worse consequences: access the person no longer has, held until their token
+ * expires.
+ *
+ * The cost is one indexed lookup per request, on endpoints that all hit the
+ * database anyway; the claim stays in the token for debugging but no longer
+ * decides anything here.
  */
-async function resolveRoles(userId: string, appMeta: unknown): Promise<Resolved> {
-  const claims = appMeta as { tenant_roles?: Record<string, string>; platform_admin?: boolean };
-  if (claims?.tenant_roles) {
-    return { roles: claims.tenant_roles, isAdmin: claims.platform_admin === true };
-  }
-  const [m, p] = await Promise.all([
-    pool.query<{ tenant_id: string; role: string }>(
-      `select tenant_id, role from core.memberships where user_id = $1 and status = 'active'`,
-      [userId],
-    ),
-    pool.query<{ is_platform_admin: boolean }>(
-      `select is_platform_admin from core.profiles where id = $1`,
-      [userId],
-    ),
-  ]);
+async function resolveRoles(userId: string): Promise<Resolved> {
+  const { rows } = await pool.query<{
+    is_platform_admin: boolean;
+    tenant_id: string | null;
+    role: string | null;
+  }>(
+    `select p.is_platform_admin, m.tenant_id, m.role
+       from core.profiles p
+       left join core.memberships m
+         on m.user_id = p.id and m.status = 'active'
+      where p.id = $1`,
+    [userId],
+  );
   return {
-    roles: Object.fromEntries(m.rows.map((r) => [r.tenant_id, r.role])),
-    isAdmin: p.rows[0]?.is_platform_admin === true,
+    roles: Object.fromEntries(
+      rows.filter((r) => r.tenant_id && r.role).map((r) => [r.tenant_id!, r.role!]),
+    ),
+    isAdmin: rows[0]?.is_platform_admin === true,
   };
 }
 
@@ -50,7 +63,7 @@ export function requireTenantRole(min: RoleName): RequestHandler {
   return asyncHandler(async (req, _res, next) => {
     if (!req.auth) throw new UnauthorizedError();
 
-    const { roles, isAdmin } = await resolveRoles(req.auth.user.id, req.auth.user.app_metadata);
+    const { roles, isAdmin } = await resolveRoles(req.auth.user.id);
     const requested =
       req.header('x-tenant-id') ?? (typeof req.query.tenant_id === 'string' ? req.query.tenant_id : null);
 
@@ -67,7 +80,18 @@ export function requireTenantRole(min: RoleName): RequestHandler {
       if (isAdmin) role = 'super_admin';
       else throw new ForbiddenError('Not a member of this tenant');
     }
-    if (!isRoleName(role) || !meetsRole(role, min)) {
+    // An unrecognised role now means the MEMBERSHIP row carries a role this app
+    // doesn't rank (`core.role` also holds `client_facing_lead` and `team_member`,
+    // which are other apps' vocabulary), not that the caller's session is old.
+    // This used to answer 401 "refresh required", which was the right call while
+    // roles came from a frozen JWT claim and a refresh re-stamped them; now that
+    // `resolveRoles` reads core.memberships directly, refreshing changes nothing
+    // and a 401 would just bounce the user out of a session that is perfectly
+    // valid. 403 is the truthful answer: signed in, not entitled here.
+    if (!isRoleName(role)) {
+      throw new ForbiddenError('This role has no Portal access');
+    }
+    if (!meetsRole(role, min)) {
       throw new ForbiddenError(`Requires role ${min}`);
     }
 
