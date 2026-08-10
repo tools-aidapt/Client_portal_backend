@@ -1,9 +1,14 @@
 import { withTransaction } from '@infra/db/pool.js';
 import { onboardingRepo } from '@modules/admin/clients/repositories/onboarding.repository.js';
+import { sendInviteEmailNow } from '@modules/invitations/invite-email.js';
 
 /**
- * Create an invitation and queue its email (via the outbox → n8n). Shared by the
+ * Create an invitation and send its email immediately. Shared by the
  * platform-admin invite endpoint and the org-admin invite endpoint.
+ *
+ * The outbox row is still written (durability/retry if the immediate send
+ * fails), but nothing here waits on a separate drain process to fire it —
+ * see sendInviteEmailNow for why that mattered.
  */
 export const invitationsService = {
   async invite(input: {
@@ -29,6 +34,9 @@ export const invitationsService = {
       });
       return created;
     });
+    // Outside the transaction — an external HTTP call has no business
+    // holding a DB connection open.
+    await sendInviteEmailNow(inv.id, inv.token);
     return { invitationId: inv.id };
   },
 };
