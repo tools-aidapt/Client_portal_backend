@@ -156,9 +156,9 @@ export const wishlistRepo = {
          (tenant_id, clickup_task_id, title, state, created_at,
           problem, who_feels_pain, urgency, submitter_notes,
           submitter_name, submitter_role, submitter_company, submitted_at,
-          body_md, submitted_by, synced_at)
+          body_md, department, submitted_by, synced_at)
        values ($1, $2, $3, 'candidate', coalesce($4::timestamptz, now()),
-               $5, $6, $7, $8, $9, $10, $11, $12::timestamptz, $13, $14, now())
+               $5, $6, $7, $8, $9, $10, $11, $12::timestamptz, $13, $14, $15, now())
        on conflict (clickup_task_id) where clickup_task_id is not null do update set
          tenant_id         = excluded.tenant_id,
          title             = excluded.title,
@@ -171,6 +171,7 @@ export const wishlistRepo = {
          submitter_company = excluded.submitter_company,
          submitted_at      = excluded.submitted_at,
          body_md           = excluded.body_md,
+         department        = excluded.department,
          -- Never clear an attribution we already made: a form email that stops
          -- resolving (the person left the tenant) shouldn't orphan the request.
          submitted_by      = coalesce(excluded.submitted_by, portal.wishlist_items.submitted_by),
@@ -179,7 +180,7 @@ export const wishlistRepo = {
         input.tenantId, input.clickupTaskId, input.title, input.createdAt,
         d.problem, d.whoFeelsPain, d.urgency, d.submitterNotes,
         d.submitterName, d.submitterRole, d.submitterCompany, d.submittedAt,
-        d.bodyMd, input.submittedBy,
+        d.bodyMd, d.department, input.submittedBy,
       ],
     );
   },

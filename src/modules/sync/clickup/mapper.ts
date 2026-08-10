@@ -19,6 +19,11 @@ export const FIELD = {
   rag: '65bab230-bcb1-4c9d-9cad-7d27eb0941af',
   progress: '976d84ed-390c-45bb-ba5c-497db2e45eec', // "Progress %"
   clientGroup: '6dbb293b-16a6-4c8c-aa7b-21203d2cdb8a',
+  /** "Client Department" — which department at the client submitted a wishlist
+   * request (Legal/Sales/Marketing/HR/Organisation-Wide/Manufacturing). Not to
+   * be confused with the unrelated "Department" field (Aidapt's own pillar
+   * taxonomy, id 9b7806ba-...). Lives only on the shared wishlist list. */
+  clientDepartment: '14d1758e-d1c3-4ba6-b6c0-c655efab6d30',
 } as const;
 
 /**
@@ -209,6 +214,11 @@ export function extractClientGroup(task: ClickUpTask): string | null {
 /** Whether a task's "Client Visible" checkbox is set. */
 export function isClientVisible(task: ClickUpTask): boolean {
   return boolField(fieldById(task, FIELD.clientVisible));
+}
+
+/** Extract the "Client Department" value from a wishlist task, if set. */
+export function extractClientDepartment(task: ClickUpTask): string | null {
+  return dropdownName(fieldById(task, FIELD.clientDepartment));
 }
 
 // ---------------------------------------------------------------------------

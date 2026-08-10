@@ -1,5 +1,5 @@
 import type { ClickUpTask } from '@infra/clickup/client.js';
-import { isSeparatorRow, tableCells } from './mapper.js';
+import { extractClientDepartment, isSeparatorRow, tableCells } from './mapper.js';
 
 /**
  * Parser for the client wishlist intake form.
@@ -42,6 +42,14 @@ export interface WishlistDetail {
   submittedAt: string | null;
   /** Redacted verbatim fallback. Null when nothing survives redaction. */
   bodyMd: string | null;
+  /**
+   * The "Client Department" ClickUp custom field (Legal/Sales/Marketing/HR/
+   * Organisation-Wide/Manufacturing) — which department at the client
+   * submitted this request. Unlike every other field on this type, this comes
+   * from a real custom field, not the markdown form body, so it's set
+   * separately in `mapWishlistTask` rather than in `parseWishlistBody`.
+   */
+  department: string | null;
 }
 
 /** A wishlist row ready to upsert. `tenantId` is resolved by the caller. */
@@ -64,6 +72,7 @@ const EMPTY: WishlistDetail = {
   submitterCompany: null,
   submittedAt: null,
   bodyMd: null,
+  department: null,
 };
 
 /**
@@ -321,6 +330,8 @@ export function parseWishlistBody(markdown: string | null | undefined): Wishlist
     submitterCompany: normaliseSentinel(table.get('company')),
     submittedAt: parseSubmittedAt(table.get('submitted at') ?? null),
     bodyMd: null,
+    // Set by `mapWishlistTask` from the task's custom field, not the body.
+    department: null,
   };
 
   const redacted = redactBody(raw);
@@ -357,6 +368,6 @@ export function mapWishlistTask(task: ClickUpTask, ctx: { tenantId: string }): W
     clickupTaskId: task.id,
     title: task.name,
     createdAt: task.date_created ? new Date(Number(task.date_created)).toISOString() : null,
-    detail: parseWishlistBody(body),
+    detail: { ...parseWishlistBody(body), department: extractClientDepartment(task) },
   };
 }
