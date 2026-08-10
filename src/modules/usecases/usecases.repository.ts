@@ -23,9 +23,9 @@ export interface LibraryDetailRow extends Omit<LibraryRow, 'snippet'> {
   business_function: string | null;
   integration_type: string | null;
   problem: string | null;
-  what_gets_built: string | null;
+  solution: string | null;
   connects_to: string[] | null;
-  definition_of_done: string | null;
+  impact: string | null;
   /** Raw ClickUp body — a fallback for studies whose sections didn't parse. */
   body_md: string | null;
 }
@@ -36,6 +36,10 @@ export interface LibraryQuery {
   niche: string | null;
   category: string | null;
   buildType: string | null;
+}
+
+export interface LibraryPage extends LibraryQuery {
+  limit: number;
 }
 
 export interface FacetCount {
@@ -80,7 +84,7 @@ export const useCasesRepo = {
    * Ordering is by search rank when searching (best match first) and
    * alphabetical when browsing, so the list is never arbitrary.
    */
-  async library(q: LibraryQuery): Promise<LibraryRow[]> {
+  async library(q: LibraryPage): Promise<LibraryRow[]> {
     const { where, params } = buildFilter(q);
 
     // `$1` is the tsquery whenever one is present, so it can be reused here.
@@ -91,15 +95,31 @@ export const useCasesRepo = {
            to_tsquery('english', $1), '${HEADLINE_OPTS}')`
       : 'null::text';
 
+    params.push(q.limit);
     const { rows } = await pool.query<LibraryRow>(
       `select slug, name, capability, description, build_type, category, niche,
               source_list_name, ${snippet} as snippet
          from portal.use_cases
         where ${where}
-        order by ${rank ? `${rank} desc,` : ''} name`,
+        order by ${rank ? `${rank} desc,` : ''} name
+        limit $${params.length}`,
       params,
     );
     return rows;
+  },
+
+  /**
+   * How many rows the current search + filters match, ignoring `limit` — the
+   * page needs the real total to show "48 of 214" and decide whether there is
+   * more to load.
+   */
+  async libraryCount(q: LibraryQuery): Promise<number> {
+    const { where, params } = buildFilter(q);
+    const { rows } = await pool.query<{ count: string }>(
+      `select count(*) as count from portal.use_cases where ${where}`,
+      params,
+    );
+    return Number(rows[0]?.count ?? 0);
   },
 
   /**
@@ -156,7 +176,7 @@ export const useCasesRepo = {
     const { rows } = await pool.query<LibraryDetailRow>(
       `select slug, name, capability, description, build_type, category, niche,
               source_list_name, business_function, integration_type,
-              problem, what_gets_built, connects_to, definition_of_done, body_md
+              problem, solution, connects_to, impact, body_md
          from portal.use_cases
         where slug = $1 and is_published = true`,
       [slug],

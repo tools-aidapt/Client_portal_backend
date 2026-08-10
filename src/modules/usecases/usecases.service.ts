@@ -10,6 +10,15 @@ const CAPABILITY_LABEL: Record<string, Capability> = {
 };
 
 /**
+ * The library is ~600 studies, so the list is capped by default: rendering every
+ * card at once is a wall the client has to scroll past, and search-as-you-type
+ * would ship the whole catalogue on each debounced keystroke. The page raises
+ * `limit` when the user asks for more.
+ */
+export const DEFAULT_LIMIT = 60;
+export const MAX_LIMIT = 600;
+
+/**
  * Turn a user's free text into a safe tsquery with prefix matching on the last
  * word, so search works as they type ("insur" finds Insurance).
  *
@@ -53,6 +62,7 @@ export const useCasesService = {
     niche?: string;
     category?: string;
     buildType?: string;
+    limit?: number;
   }) {
     const query: LibraryQuery = {
       tsQuery: toTsQuery(params.q),
@@ -60,9 +70,11 @@ export const useCasesService = {
       category: params.category ?? null,
       buildType: params.buildType ?? null,
     };
+    const limit = params.limit ?? DEFAULT_LIMIT;
 
-    const [rows, facets, total] = await Promise.all([
-      useCasesRepo.library(query),
+    const [rows, matched, facets, total] = await Promise.all([
+      useCasesRepo.library({ ...query, limit }),
+      useCasesRepo.libraryCount(query),
       useCasesRepo.facets(query.tsQuery),
       useCasesRepo.publishedTotal(),
     ]);
@@ -70,14 +82,18 @@ export const useCasesService = {
     return {
       /** Every published study, ignoring search/filters — the "of N" denominator. */
       total,
-      /** How many matched the current search + filters. */
-      matched: rows.length,
+      /** How many match the current search + filters, ignoring `limit`. */
+      matched,
+      /** How many were actually returned, and whether asking for more would help. */
+      returned: rows.length,
+      has_more: rows.length < matched,
       /** Echoed back so the client can tell an ignored query from an applied one. */
       query: {
         q: params.q ?? null,
         niche: query.niche,
         category: query.category,
         build_type: query.buildType,
+        limit,
         /** False when `q` was given but held nothing searchable. */
         search_applied: query.tsQuery !== null,
       },
@@ -112,11 +128,11 @@ export const useCasesService = {
       business_function: r.business_function,
       integration_type: r.integration_type,
       problem: r.problem,
-      what_gets_built: r.what_gets_built,
+      solution: r.solution,
       connects_to: r.connects_to ?? [],
-      definition_of_done: r.definition_of_done,
+      impact: r.impact,
       // Only useful when the structured sections are absent; the UI falls back to it.
-      body_md: r.problem || r.what_gets_built ? null : r.body_md,
+      body_md: r.problem || r.solution ? null : r.body_md,
     };
   },
 };

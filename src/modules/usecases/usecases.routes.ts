@@ -5,6 +5,7 @@ import { authenticate } from '@/api/middlewares/authenticate.js';
 import { requireTenantRole } from '@/api/middlewares/tenant.js';
 import { validate } from '@/api/middlewares/validate.js';
 import { useCasesController } from './usecases.controller.js';
+import { MAX_LIMIT } from './usecases.service.js';
 
 /**
  * GET /usecases       — the shared use case library (+ the client's live automations).
@@ -28,6 +29,7 @@ const listQuery = z.object({
   niche: z.string().trim().max(80).optional(),
   category: z.string().trim().max(80).optional(),
   build_type: z.string().trim().max(80).optional(),
+  limit: z.coerce.number().int().min(1).max(MAX_LIMIT).optional(),
 });
 
 useCasesRoutes.get('/', plus, validate({ query: listQuery }), asyncHandler(useCasesController.list));

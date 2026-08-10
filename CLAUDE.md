@@ -424,9 +424,23 @@ STUBBED (log-only, need real integration):
   Its 5 populated lists are `Automation`(169) `Snowflake`(164) `Sigma`(157)
   `ClickUp`(73) `Wati`(35) = **598 tasks**. `Case Study Hub` is EMPTY despite
   ClickUp list metadata claiming `task_count: 25` — that counter is stale.
-- **`Confidentiality Level` is the publish gate, and 558 of 598 are UNSET.**
-  Only **40** are marked `Public`; unset is treated as NOT public (internal
-  reference material must not leak). All 40 happen to be in `Automation`.
+- **Publishing use cases is OPT-OUT** (changed on request; it was opt-in). A study
+  is shown unless ClickUp marks it `NDA-required`/`Internal-only`, **or** its name
+  carries a leading housekeeping tag (`[ARCHIVE]`, `[DUPLICATE - DELETE]` — 18 such
+  tasks, which would otherwise have gone straight to clients). ~580 of 598 publish.
+  Under the old opt-in rule only 40 qualified, because `Confidentiality Level` is
+  blank on 558 and four of the five lists had no `Public` entry at all.
+- **The five lists use FOUR different heading conventions**, and the parser has to
+  know all of them plus every non-surfaced heading (a heading is what ENDS the
+  previous section):
+  - `PROBLEM` / `WHAT GETS BUILT` / `DEFINITION OF DONE` — Automation, Wati
+  - `Problem:` / `Solution:` / `Success Criteria:` — ClickUp
+  - `Problem` / `Solution` / `Success Criteria` — Snowflake
+  - `Purpose` / `Success Criteria`, usually **no problem** — Sigma (BI workbooks)
+  Plus two shape quirks: some bodies arrive with **escaped newlines** (literal
+  `\n`), which collapses everything to one line, and some put the heading and body
+  on the **same line** (`Problem: Banks in MEA…`). Both are handled; ignoring
+  either dropped ~390 studies to the raw-text fallback.
 - **Case studies carry NO capability.** `OS Pillar` and `Department` are unset on
   **598/598** tasks in this folder, so capability is unavailable — hence nullable
   in `0022` and null on every synced row. The populated taxonomy is

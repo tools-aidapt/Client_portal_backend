@@ -603,13 +603,14 @@ export const syncService = {
         }
       }
 
-      // Every task is stored; `skipped` are the ones held back from clients, so
-      // a run that publishes nothing is still 'success' rather than 'partial'.
+      // Every task is stored either way; `skipped` counts those held back from
+      // clients (explicitly NDA-required / Internal-only in ClickUp), which is a
+      // normal outcome rather than a partial failure.
       await syncRepo.finishRun(
         runId,
         'success',
         upserted,
-        skipped ? `${skipped} not Public — withheld` : undefined,
+        skipped ? `${skipped} withheld (NDA-required/Internal-only)` : undefined,
       );
       logger.info({ lists: lists.length, upserted, skipped }, 'Use case library sync complete');
       return { runId, upserted, skipped, status: 'success', lists: lists.length };

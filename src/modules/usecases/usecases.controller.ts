@@ -11,8 +11,17 @@ export const useCasesController = {
    */
   async list(req: Request, res: Response): Promise<void> {
     if (!req.tenant) throw new UnauthorizedError();
-    const { q, niche, category, build_type: buildType } = req.query as Record<string, string | undefined>;
-    res.status(StatusCodes.OK).json(ok(await useCasesService.list({ q, niche, category, buildType })));
+    // `limit` is coerced to a number by the route's zod schema.
+    const { q, niche, category, build_type: buildType, limit } = req.query as unknown as {
+      q?: string;
+      niche?: string;
+      category?: string;
+      build_type?: string;
+      limit?: number;
+    };
+    res
+      .status(StatusCodes.OK)
+      .json(ok(await useCasesService.list({ q, niche, category, buildType, limit })));
   },
 
   async detail(req: Request, res: Response): Promise<void> {

@@ -33,73 +33,162 @@ export interface UseCaseUpsert {
   businessFunction: string | null;
   integrationType: string | null;
   problem: string | null;
-  whatGetsBuilt: string | null;
+  solution: string | null;
   connectsTo: string[] | null;
-  definitionOfDone: string | null;
+  impact: string | null;
   bodyMd: string | null;
   sourceListName: string;
   clickupTaskId: string;
   isPublished: boolean;
 }
 
+type SectionField = 'problem' | 'solution' | 'impact' | 'connectsTo';
+
 /**
- * Split a case-study description into its four canonical sections. Every study
- * in the library follows the same ALL-CAPS heading layout:
+ * Heading -> section, keyed by the lowercased heading with any trailing colon
+ * stripped. The five library lists were authored by different people and use
+ * three different conventions, so the same section arrives under several names:
  *
- *   PROBLEM / WHAT GETS BUILT / CONNECTS TO / DEFINITION OF DONE
+ *   Automation + Wati   PROBLEM / WHAT GETS BUILT / DEFINITION OF DONE
+ *   ClickUp             Problem: / Solution: / Success Criteria:
+ *   Snowflake           Problem / Solution / Success Criteria
+ *   Sigma               (no problem) / Purpose / Success Criteria
  *
- * Headings are matched on their own line so prose that happens to contain the
- * words is not mistaken for a heading. Anything that doesn't match simply comes
- * back null and the caller keeps the raw text in `body_md`, so an unparseable
- * description degrades to "shown verbatim" rather than being dropped.
+ * Sigma studies are BI workbooks rather than automations — they describe what a
+ * dashboard is for instead of a problem narrative, so `Purpose` is their
+ * closest equivalent to Solution and most have no Problem at all.
+ */
+const HEADING_TO_FIELD = new Map<string, SectionField>([
+  ['problem', 'problem'],
+  ['what gets built', 'solution'],
+  ['solution', 'solution'],
+  ['purpose', 'solution'],
+  ['definition of done', 'impact'],
+  ['success criteria', 'impact'],
+  ['connects to', 'connectsTo'],
+]);
+
+/**
+ * Headings we don't surface but MUST recognise, because a heading is what ends
+ * the previous section. Without these, "Success Criteria" would swallow
+ * "Estimated Build Time", "MEA Context" and everything after it.
+ */
+const BOUNDARY_HEADINGS = new Set([
+  'integration',
+  'integrations',
+  'snowflake features used',
+  'sigma features used',
+  'data sources',
+  'data model',
+  'implementation phases',
+  'mea context',
+  'estimated build time',
+  'key views & metrics',
+  'key views and metrics',
+  'interactivity & governance',
+  'interactivity and governance',
+]);
+
+/** A standalone short line reads as a heading; a sentence does not. */
+function headingKey(line: string): string | null {
+  const s = line.trim().replace(/:$/, '');
+  if (!s || s.length > 40 || !/^[A-Za-z]/.test(s)) return null;
+  if (s.split(/\s+/).length > 5) return null;
+  return s.toLowerCase();
+}
+
+/**
+ * `Problem: Banks in MEA spend…` — heading and body on ONE line. Common in the
+ * studies whose newlines arrive escaped, where there is no separate heading line
+ * to find. Matches a known label followed by a colon, and returns the label plus
+ * whatever followed it on that line.
+ */
+const INLINE_HEADING = new RegExp(
+  `^\\s*(${[...HEADING_TO_FIELD.keys(), ...BOUNDARY_HEADINGS]
+    .sort((a, b) => b.length - a.length) // longest first, so "connects to" wins over "connects"
+    .map((l) => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('|')})\\s*:\\s*(.*)$`,
+  'i',
+);
+
+/**
+ * Split a case-study description into the three client-facing sections
+ * (Problem / Solution / Impact) plus the integration list.
+ *
+ * Line-based rather than regex-per-label: with three heading conventions across
+ * the library, walking the lines and looking each one up is both shorter and the
+ * only way to treat an unsurfaced heading as a section boundary.
+ *
+ * The FIRST occurrence of a section wins — a few Sigma studies carry both
+ * `Purpose` and `Solution`, and the earlier one is the summary.
+ *
+ * Anything unrecognised comes back null and the caller keeps the raw text in
+ * `body_md`, so an unparseable description degrades to "shown verbatim".
  */
 export function parseCaseStudySections(description: string | null | undefined): {
   problem: string | null;
-  whatGetsBuilt: string | null;
+  solution: string | null;
+  impact: string | null;
   connectsTo: string[] | null;
-  definitionOfDone: string | null;
 } {
-  const text = (description ?? '').replace(/\r\n/g, '\n');
-  const empty = { problem: null, whatGetsBuilt: null, connectsTo: null, definitionOfDone: null };
+  // Some ClickUp descriptions arrive with ESCAPED newlines — the literal two
+  // characters `\` `n` instead of a line break — which collapses the whole body
+  // into one line and defeats heading detection entirely (8 studies). Unescape
+  // before splitting; a real backslash-n in prose doesn't occur here.
+  const text = (description ?? '').replace(/\\r\\n|\\n/g, '\n').replace(/\r\n/g, '\n');
+  const empty = { problem: null, solution: null, impact: null, connectsTo: null };
   if (!text.trim()) return empty;
 
-  const HEADINGS = [
-    ['problem', 'PROBLEM'],
-    ['whatGetsBuilt', 'WHAT GETS BUILT'],
-    ['connectsTo', 'CONNECTS TO'],
-    ['definitionOfDone', 'DEFINITION OF DONE'],
-  ] as const;
+  const buckets = new Map<SectionField, string[]>();
+  let current: SectionField | null = null;
 
-  // Locate each heading on its own line, then slice up to the next one found.
-  const found = HEADINGS.map(([key, label]) => {
-    const m = new RegExp(`^\\s*${label}\\s*$`, 'm').exec(text);
-    return { key, index: m ? m.index : -1, length: m ? m[0].length : 0 };
-  })
-    .filter((h) => h.index >= 0)
-    .sort((a, b) => a.index - b.index);
+  // Opening a section: first occurrence wins, and a repeat heading still closes
+  // whatever was being collected.
+  const open = (field: SectionField): SectionField | null =>
+    buckets.has(field) ? null : (buckets.set(field, []), field);
 
-  if (found.length === 0) return empty;
+  for (const line of text.split('\n')) {
+    const inline = INLINE_HEADING.exec(line);
+    if (inline) {
+      const key = inline[1]!.toLowerCase();
+      const field = HEADING_TO_FIELD.get(key);
+      current = field ? open(field) : null;
+      const rest = inline[2]!.trim();
+      if (current && rest) buckets.get(current)!.push(rest);
+      continue;
+    }
 
-  const out: Record<string, string> = {};
-  found.forEach((h, i) => {
-    const start = h.index + h.length;
-    const end = i + 1 < found.length ? found[i + 1]!.index : text.length;
-    out[h.key] = text.slice(start, end).trim();
-  });
+    const key = headingKey(line);
+    if (key !== null) {
+      const field = HEADING_TO_FIELD.get(key);
+      if (field) {
+        current = open(field);
+        continue;
+      }
+      if (BOUNDARY_HEADINGS.has(key)) {
+        current = null;
+        continue;
+      }
+      // Not a known heading — fall through and treat it as content.
+    }
+    if (current) buckets.get(current)!.push(line);
+  }
 
-  // "CONNECTS TO" is a newline-separated list of systems, not prose.
-  const connects = out.connectsTo
-    ? out.connectsTo
-        .split('\n')
-        .map((l) => l.replace(/^[-*•]\s*/, '').trim())
-        .filter(Boolean)
-    : [];
+  const textOf = (field: SectionField): string | null => {
+    const joined = (buckets.get(field) ?? []).join('\n').trim();
+    return joined || null;
+  };
+
+  // "Connects to" is a newline-separated list of systems, not prose.
+  const connects = (buckets.get('connectsTo') ?? [])
+    .map((l) => l.replace(/^[-*•]\s*/, '').trim())
+    .filter(Boolean);
 
   return {
-    problem: out.problem || null,
-    whatGetsBuilt: out.whatGetsBuilt || null,
+    problem: textOf('problem'),
+    solution: textOf('solution'),
+    impact: textOf('impact'),
     connectsTo: connects.length ? connects : null,
-    definitionOfDone: out.definitionOfDone || null,
   };
 }
 
@@ -137,12 +226,43 @@ function textValue(field: ClickUpCustomField | undefined): string | null {
 }
 
 /**
+ * Values of `Confidentiality Level` that keep a study OUT of the Portal.
+ * Anything else — including unset — is publishable.
+ */
+const WITHHELD_CONFIDENTIALITY = new Set(['NDA-required', 'Internal-only']);
+
+/**
+ * Markers the library's authors put in a LEADING bracket tag to flag a task as
+ * not-real content: `[ARCHIVE] …`, `[DUPLICATE - DELETE] … superseded by task 09`.
+ * 18 such tasks exist, and once publishing became opt-out they would have gone
+ * straight onto the client's page — "[DUPLICATE - DELETE]" is not a use case.
+ *
+ * Only a leading bracket counts, so a study that merely discusses archiving is
+ * unaffected.
+ */
+const HOUSEKEEPING_MARKERS = ['ARCHIVE', 'DUPLICATE', 'DELETE', 'OBSOLETE', 'SUPERSEDED', 'WIP', 'DRAFT'];
+
+function isHousekeepingTitle(name: string): boolean {
+  const tag = /^\s*\[([^\]]{1,40})\]/.exec(name);
+  if (!tag) return false;
+  const inner = tag[1]!.toUpperCase();
+  return HOUSEKEEPING_MARKERS.some((m) => inner.includes(m));
+}
+
+/**
  * Map a case-study task to a use_cases row.
  *
- * The publish gate is `Confidentiality Level = 'Public'` — an EXPLICIT
- * classification. Unset (558 of 598 tasks) is treated as not public: this is
- * internal reference material, so an unclassified study is withheld rather than
- * shown. Callers filter on `isPublished`; nothing else decides visibility.
+ * Publishing is OPT-OUT: a study is shown unless `Confidentiality Level` is
+ * explicitly `NDA-required` or `Internal-only`.
+ *
+ * This was originally opt-IN (only `Public` shown), which surfaced 40 of 598
+ * because the field is blank on 558 and four of the five lists had no `Public`
+ * entry at all. That default was changed on request — the whole library is
+ * intended to be client-facing. The explicit values are still honoured, so
+ * marking a single study `Internal-only` in ClickUp withdraws it on the next
+ * sync; that is now the mechanism for hiding something, rather than the default.
+ *
+ * Commercial fields are never synced regardless of this flag (see CASE_FIELD).
  */
 export function mapCaseStudyTask(task: ClickUpTask, sourceListName: string): UseCaseUpsert {
   const confidentiality = optionName(fieldById(task, CASE_FIELD.confidentiality));
@@ -162,7 +282,9 @@ export function mapCaseStudyTask(task: ClickUpTask, sourceListName: string): Use
     bodyMd: body || null,
     sourceListName,
     clickupTaskId: task.id,
-    isPublished: confidentiality === 'Public',
+    isPublished:
+      !(confidentiality !== null && WITHHELD_CONFIDENTIALITY.has(confidentiality)) &&
+      !isHousekeepingTitle(task.name),
   };
 }
 

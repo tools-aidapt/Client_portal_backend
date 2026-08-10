@@ -7,16 +7,17 @@ export const syncRepo = {
   /**
    * Upsert one case study into the tenant-agnostic use case library.
    * `capability` is never written — the source has no capability field (see
-   * migration 0022). `is_published` is driven purely by the ClickUp
-   * Confidentiality Level, so a study that is reclassified away from 'Public'
-   * is withdrawn from the Portal on the next sync.
+   * migration 0022). `is_published` comes straight from the mapper, which
+   * publishes everything except studies explicitly marked `NDA-required` or
+   * `Internal-only` in ClickUp — so re-marking one there withdraws it on the
+   * next sync.
    */
   async upsertUseCase(u: UseCaseUpsert): Promise<void> {
     await pool.query(
       `insert into portal.use_cases
          (slug, name, description, category, niche, build_type,
-          business_function, integration_type, problem, what_gets_built,
-          connects_to, definition_of_done, body_md,
+          business_function, integration_type, problem, solution,
+          connects_to, impact, body_md,
           source_list_name, clickup_task_id, is_published, synced_at, updated_at)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, now(), now())
        on conflict (clickup_task_id) do update set
@@ -28,9 +29,9 @@ export const syncRepo = {
          business_function  = excluded.business_function,
          integration_type   = excluded.integration_type,
          problem            = excluded.problem,
-         what_gets_built    = excluded.what_gets_built,
+         solution    = excluded.solution,
          connects_to        = excluded.connects_to,
-         definition_of_done = excluded.definition_of_done,
+         impact = excluded.impact,
          body_md            = excluded.body_md,
          source_list_name   = excluded.source_list_name,
          is_published       = excluded.is_published,
@@ -46,9 +47,9 @@ export const syncRepo = {
         u.businessFunction,
         u.integrationType,
         u.problem,
-        u.whatGetsBuilt,
+        u.solution,
         u.connectsTo,
-        u.definitionOfDone,
+        u.impact,
         u.bodyMd,
         u.sourceListName,
         u.clickupTaskId,
