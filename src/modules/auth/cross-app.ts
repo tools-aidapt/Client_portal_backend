@@ -14,11 +14,18 @@ import { logger } from '@infra/logger/index.js';
  * (there's no outbox entry for this yet; see CLAUDE.md for that follow-up).
  */
 
-const LMS_ROLE: Record<string, 'member' | 'admin' | 'super_admin'> = {
+/**
+ * LMS's own POST /auth/register only ever accepts 'super_admin' or 'member'
+ * (confirmed directly in its controller — there is no 'admin' option for this
+ * specific sync endpoint, even though the app has an 'admin' tier elsewhere).
+ * Every client-side Portal role collapses to LMS 'member'; only a Portal
+ * `super_admin` (Aidapt staff) maps to LMS 'super_admin'.
+ */
+const LMS_ROLE: Record<string, 'member' | 'super_admin'> = {
   member: 'member',
   member_plus: 'member',
   member_pro: 'member',
-  org_admin: 'admin',
+  org_admin: 'member',
   super_admin: 'super_admin',
 };
 
