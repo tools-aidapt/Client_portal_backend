@@ -201,8 +201,36 @@ email is registered, to avoid leaking account existence.
     (`tenant_id, actor_id, action, target, metadata, created_at`) but is written
     for only two actions — `invitation.registered` and `onboarding.completed` —
     and Kenafric has exactly 1 row. Flagged, not reconciled.
-- [ ] **8. LMS/Support summary refresh** — LMS tile is live via join; Support reads
-  `support.tenant_support_summary`. `/lms|support/internal/refresh-summary` not built.
+- [x] **8. LMS/Support summary refresh** — both tiles are now computed LIVE, so
+  there is nothing left to "refresh"; `/lms|support/internal/refresh-summary` is
+  obsolete rather than pending. Fixed 2026-08-13, when all three Dashboard tiles
+  were empty for Kenafric at once:
+  - **Support** no longer reads `support.tenant_support_summary`. That table is
+    written once by onboarding's `insertSupportDefaults()` and updated by
+    NOTHING — Kenafric's row still read `0 open / 0 breached, updated
+    2026-07-24` while Support Desk held 29 real tickets, 19 open. It now counts
+    `support.sd_tickets` directly. **`sd_tickets.client_id` holds the PORTAL
+    tenant id, not `sd_clients.id`** (39/39 rows join to `core.tenants`, zero
+    orphans; joining via `sd_clients` returns nothing — that table is a
+    separate legacy list with its own ids, which is what
+    `external_tenant_links` maps). The summary table is left in place; retiring
+    it is Support Desk's call.
+  - **`breached_sla` is a derived heuristic, not a real SLA.** No SLA policy
+    exists anywhere in Support Desk — no target column, no `sd_app_settings`
+    entry. Its UI badge is `getSla()` in the frontend, bucketing on age since
+    `created_at` (<24h / <72h / else breached) and ignoring resolution, so
+    closed tickets still render "Breached" there. The Portal mirrors the 72h
+    threshold but counts only open/in_progress, so the two surfaces can
+    legitimately disagree. Read a real policy here if one is ever added.
+  - **LMS** bridges on `core.external_tenant_links` UNION the original email
+    domain join. The domain join alone silently failed because
+    `core.tenant_email_domains` is **empty** for Kenafric, Aidapt, HBL and Pam
+    Golding, while `external_tenant_links` already pointed at the correct LMS
+    group. Kenafric legitimately shows `courses_assigned: 0` — its group has 4
+    active learners and no `LMS_group_course_entitlements` rows.
+  - All three verified by `scripts/smoke-dashboard-tiles.ts` (6/6), which also
+    asserts tiles stay null for tenants with genuinely no LMS/Support presence
+    rather than fabricating zeros.
 - [x] **9. Automation health** — admin `POST /admin/clients/:id/automations` (register
   + seed health), client `GET /automations/health` (member_plus), n8n execution
   webhook `POST /webhooks/n8n/execution` (service secret) updates health + notifies
@@ -293,20 +321,26 @@ STUBBED (log-only, need real integration):
   correct (recipient, tenant name, role, real token, 14-day expiry) — the base
   URL is the only thing standing between this and a working client invite, and
   it needs a real public origin in `.env` before anyone invites a client.
-- **The Sprint Line is scoped by DUE DATE, not by `task_cache.sprint_id`.**
-  `portalRepo.sprintTasks` used to filter `source = 'sprint' and sprint_id = $2`
-  and returned **zero rows for every tenant, every sprint** — the Dashboard showed
-  "In sprint: 00" against a real active sprint. That predicate needs each task
-  duplicated onto a per-sprint ClickUp list and routed by "Client Group", and no
-  such list is ever populated in this workspace (Kenafric's only two
-  `source = 'sprint'` rows are `client_visible = false`). A "Sprint Number" custom
-  field was checked as an alternative and is unset on every delivery task. So the
-  signature is now `sprintTasks(tenantId, startsOn, endsOn)`, selecting
-  `source = 'delivery'` tasks whose `due_date` falls in the active sprint's
-  inclusive window, and `portalService.sprintActive` passes
-  `sprint.starts_on`/`ends_on`. Returns `[]` if either date is null — an unbounded
-  range would return the tenant's whole backlog as "this sprint". Live: 0 rows
-  before, **10** after. `source`/`sprint_id` on `task_cache` are untouched.
+- **The Sprint Line reads the sprint list FIRST, then falls back to DUE DATE.**
+  `sprintTasks(tenantId, sprintId, startsOn, endsOn)` tries
+  `source = 'sprint' and sprint_id = $2` and, only when that returns nothing,
+  re-queries `source = 'delivery'` tasks whose `due_date` falls in the active
+  sprint's inclusive window (that branch also filters `client_visible`, the
+  sprint-list branch does not). Returns `[]` if the list is empty AND either
+  bound is null — an unbounded range would return the tenant's whole backlog as
+  "this sprint". `source`/`sprint_id` on `task_cache` are untouched.
+  **Both branches are load-bearing; neither alone is correct.** The sprint list
+  needs each task duplicated onto a per-sprint ClickUp list and routed by
+  "Client Group", and that is done for SOME tenants only — on 2026-08-13 the
+  Sprint 7 list carried Tile & Carpet (4) and JewelFX (2) and nobody else, so a
+  sprint-list-only predicate showed Kenafric "In sprint: 0" against 341 real
+  delivery tasks with 3 due inside that window. Conversely a due-date-only
+  predicate returns 0 for JewelFX and Tile & Carpet, who have real sprint rows
+  and nothing due. History: it was sprint-list-only (0 for everyone), then
+  due-date-only (commit before `6016b96`), then sprint-list-only again
+  (`6016b96`) — each swap fixed one set of tenants by breaking the other. A
+  "Sprint Number" custom field was checked as a third option and is unset on
+  every delivery task. Covered by `scripts/smoke-dashboard-tiles.ts`.
   - **node-postgres returns `date` columns as JS `Date`s**, so `activeSprint()`
     hands over Dates despite its own (pre-existing, inaccurate) `string | null`
     annotation — `reportsRepo.getSprintMeta` has the same wrong annotation. The

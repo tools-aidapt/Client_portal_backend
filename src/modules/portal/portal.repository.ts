@@ -154,24 +154,58 @@ export const portalRepo = {
    * bounds still resolved to 2026-07-26 / 2026-08-09).
    */
   /**
-   * Every task actually in the sprint's own ClickUp list, routed to this
-   * tenant by Client Group — not a due-date guess. Tried due-date-matched
-   * `delivery` tasks first, but a real tenant can genuinely have zero tasks
-   * due in a given two-week window even with real sprint-list tasks sitting
-   * right there, which read as "sprint is empty" when it wasn't. No
-   * `client_visible` filter either: the same "Client Visible" checkbox that's
-   * unset on every Wishlist/Process-List submission (see sync.service.ts) is
-   * unset here too — treating it as "not curated yet" rather than
-   * "deliberately hidden" is the same call already made for those.
+   * The tenant's work in the active sprint, from the best source available.
+   *
+   * PRIMARY: tasks actually on the sprint's own ClickUp list, routed to this
+   * tenant by Client Group. That is the real per-sprint signal when it exists.
+   * No `client_visible` filter — the same "Client Visible" checkbox that's
+   * unset on every Wishlist/Process-List submission is unset here too, so
+   * treating it as "not curated yet" rather than "deliberately hidden" is the
+   * call already made for those.
+   *
+   * FALLBACK: `delivery` tasks whose due date lands in the sprint window.
+   * Needed because the sprint list is only populated for SOME tenants — as of
+   * 2026-08-13 the Sprint 7 list carried rows for Tile & Carpet (4) and
+   * JewelFX (2) and nobody else, so Kenafric's dashboard showed "In sprint: 0"
+   * against 341 real delivery tasks, 3 of them due inside that very window.
+   * An empty sprint list means "nobody duplicated the tasks onto it", never
+   * "this client has no work on", and the tile must not assert the latter.
+   * Unlike the primary source this DOES filter `client_visible`, matching
+   * every other delivery-sourced client read.
+   *
+   * Returns `[]` only when the sprint list is empty AND the window is
+   * unusable (either bound null) — an unbounded range would hand back the
+   * tenant's entire backlog as "this sprint". Both bounds are typed
+   * `string | Date` because node-postgres parses `date` columns into JS
+   * `Date`s; the explicit `::date` casts pin the comparison to calendar days
+   * so a local-midnight Date can't be shifted by the server's timezone.
    */
-  async sprintTasks(tenantId: string, sprintId: string | null): Promise<Array<Record<string, unknown>>> {
-    if (!sprintId) return [];
+  async sprintTasks(
+    tenantId: string,
+    sprintId: string | null,
+    startsOn?: string | Date | null,
+    endsOn?: string | Date | null,
+  ): Promise<Array<Record<string, unknown>>> {
+    if (sprintId) {
+      const { rows } = await pool.query(
+        `select ${TASK_COLUMNS}
+           from portal.task_cache tc
+          where tc.tenant_id = $1 and tc.source = 'sprint' and tc.sprint_id = $2
+          order by tc.due_date nulls last, tc.name`,
+        [tenantId, sprintId],
+      );
+      if (rows.length > 0) return rows;
+    }
+
+    if (!startsOn || !endsOn) return [];
     const { rows } = await pool.query(
       `select ${TASK_COLUMNS}
          from portal.task_cache tc
-        where tc.tenant_id = $1 and tc.source = 'sprint' and tc.sprint_id = $2
+        where tc.tenant_id = $1 and tc.source = 'delivery'
+          and tc.client_visible = true
+          and tc.due_date between $2::date and $3::date
         order by tc.due_date nulls last, tc.name`,
-      [tenantId, sprintId],
+      [tenantId, startsOn, endsOn],
     );
     return rows;
   },
@@ -252,8 +286,25 @@ export const portalRepo = {
 
   /**
    * LMS tile, computed live from the LMS team's schema. Their data keys to a
-   * client group; we bridge from the Portal tenant by email domain:
-   *   core.tenant_email_domains.domain -> lms.LMS_client_domains -> client group.
+   * client group, so the Portal tenant has to be bridged onto one. TWO bridges
+   * are unioned, because either alone leaves real clients showing "Academy not
+   * connected yet" when they demonstrably have an LMS presence:
+   *
+   *   1. `core.external_tenant_links` (migration `0035`) — the explicit
+   *      crosswalk, tenant -> LMS_client_groups.id. Authoritative when set.
+   *   2. `core.tenant_email_domains.domain` -> `LMS_client_domains` — the
+   *      original domain bridge, kept because not every tenant is in the
+   *      crosswalk yet.
+   *
+   * The crosswalk had to be added here: `core.tenant_email_domains` is EMPTY
+   * for Kenafric, Aidapt, HBL and Pam Golding (verified 2026-08-13), so the
+   * domain join returned nothing and the tile read "not connected" for
+   * Kenafric even though LMS holds a fully populated `Kenafric` client group
+   * (`534e9814-…`) — which `external_tenant_links` was already pointing at.
+   * Fixing it by inserting the missing domains would work too, but it would
+   * make a live tile depend on someone remembering to record a domain; the
+   * crosswalk is the fact that actually means "this tenant is that LMS group".
+   *
    * Returns null if the tenant maps to no LMS client group (no LMS presence).
    *
    * Wrapped in a 42P01 guard: if the LMS team renames/drops these tables the
@@ -268,6 +319,10 @@ export const portalRepo = {
         group_count: number;
       }>(
         `with groups as (
+           select l.source_id as gid
+             from core.external_tenant_links l
+            where l.tenant_id = $1 and l.source_system = 'lms'
+           union
            select distinct d.client_group_id as gid
              from core.tenant_email_domains ted
              join lms."LMS_client_domains" d on lower(d.domain) = lower(ted.domain)
@@ -305,10 +360,55 @@ export const portalRepo = {
     }
   },
 
+  /**
+   * Support tile, computed LIVE from Support Desk's own ticket table.
+   *
+   * It used to read `support.tenant_support_summary`, which is written once by
+   * onboarding's `insertSupportDefaults()` and never updated by anything —
+   * Kenafric's row still said `0 open / 0 breached, updated 2026-07-24` while
+   * Support Desk held 29 real tickets for them, 19 of them open. A tile that
+   * reports "All clear" for a client with 19 open tickets is worse than no
+   * tile, so the stale table is no longer the source. It is left in place
+   * (still written at onboarding) rather than dropped — that is Support Desk's
+   * to retire, not the Portal's.
+   *
+   * `sd_tickets.client_id` holds the PORTAL tenant id directly, not
+   * `sd_clients.id` — verified 2026-08-13: every one of the 39 rows joins
+   * cleanly to `core.tenants`, zero orphans. `sd_clients` is a separate
+   * legacy list with its own ids (what `external_tenant_links` maps), and
+   * joining through it returns nothing.
+   *
+   * **`breached_sla` is a derived heuristic, not a real SLA.** There is no SLA
+   * policy anywhere in Support Desk — no target column, no config in
+   * `sd_app_settings`. Its UI badge is `getSla()` in the frontend, bucketing
+   * purely on age since `created_at` (<24h on track, <72h at risk, else
+   * breached). This mirrors that 72h threshold so the two surfaces agree on
+   * the rule, but counts only tickets still open/in_progress: Support Desk's
+   * own badge ignores resolution, so a ticket closed weeks ago still renders
+   * "Breached" there. Counting those here would report permanent breaches for
+   * work that was finished. If a real SLA policy ever lands, this should read
+   * it instead of re-deriving.
+   *
+   * Null (tile hidden) only when the tenant has no Support Desk presence at
+   * all — no tickets and no crosswalk row — so a genuinely quiet client still
+   * gets an honest "0 open".
+   */
   async supportSummary(tenantId: string): Promise<Record<string, unknown> | null> {
     return summaryOrNull(
-      `select open_tickets, breached_sla, updated_at
-         from support.tenant_support_summary where tenant_id = $1`,
+      `select
+         count(*) filter (where status in ('open', 'in_progress'))::int as open_tickets,
+         count(*) filter (
+           where status in ('open', 'in_progress')
+             and created_at < now() - interval '72 hours'
+         )::int as breached_sla,
+         max(updated_at) as updated_at
+       from support.sd_tickets
+      where client_id = $1
+     having count(*) > 0
+         or exists (
+              select 1 from core.external_tenant_links l
+               where l.tenant_id = $1 and l.source_system = 'support_desk'
+            )`,
       tenantId,
     );
   },
