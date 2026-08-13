@@ -558,13 +558,46 @@ export const syncRepo = {
 
   // ---- sync_runs bookkeeping ----
 
-  async startRun(entity: string, tenantId: string | null): Promise<string> {
+  /**
+   * Open a `sync_runs` row. Status starts at 'running' (migration `0038`), NOT
+   * 'success' as it used to — a row was previously born successful and only
+   * corrected on completion, so a crashed run stayed a permanent false
+   * 'success' and nothing could tell "in flight" from "finished".
+   *
+   * `triggeredBy` is the profile that pressed the button in the Sync Console;
+   * null means the cron did it.
+   */
+  async startRun(
+    entity: string,
+    tenantId: string | null,
+    triggeredBy: string | null = null,
+  ): Promise<string> {
     const { rows } = await pool.query<{ id: string }>(
-      `insert into portal.sync_runs (entity, tenant_id, status) values ($1, $2, 'success')
+      `insert into portal.sync_runs (entity, tenant_id, status, triggered_by)
+       values ($1, $2, 'running', $3)
        returning id`,
-      [entity, tenantId],
+      [entity, tenantId, triggeredBy],
     );
     return rows[0]!.id;
+  },
+
+  /**
+   * Runs left 'running' with no `finished_at` by a process that died. Nothing
+   * will ever finish them, so the Console would show a phantom sync in
+   * progress forever and the concurrency guard would refuse new runs. Swept on
+   * Console load rather than by a scheduler — there is no scheduler to hang it
+   * off, and the read path is the only place that cares.
+   */
+  async reapStaleRuns(olderThanMinutes = 30): Promise<number> {
+    const { rowCount } = await pool.query(
+      `update portal.sync_runs
+          set status = 'error', finished_at = now(),
+              error_detail = coalesce(error_detail, 'Abandoned — process ended before the run finished')
+        where status = 'running'
+          and started_at < now() - ($1 || ' minutes')::interval`,
+      [String(olderThanMinutes)],
+    );
+    return rowCount ?? 0;
   },
 
   async finishRun(
