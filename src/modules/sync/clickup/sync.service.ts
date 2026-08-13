@@ -24,6 +24,9 @@ import {
 } from './report-mapper.js';
 import { mapCaseStudyTask, shortListName } from './usecase-mapper.js';
 import { mapWishlistTask } from './wishlist-mapper.js';
+import { emit, type SyncContext } from './sync.progress.js';
+
+export type { SyncContext, SyncEvent } from './sync.progress.js';
 
 export interface SyncResult {
   runId: string;
@@ -71,8 +74,8 @@ export const syncService = {
    * a large sync issues far fewer DB queries. This is the endpoint the cron/n8n
    * schedule calls.
    */
-  async syncSpaces(spaceIds: string[]): Promise<SyncResult & { spaces: number }> {
-    const runId = await syncRepo.startRun('spaces', null);
+  async syncSpaces(spaceIds: string[], ctx?: SyncContext): Promise<SyncResult & { spaces: number }> {
+    const runId = await syncRepo.startRun('spaces', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
       const statusMapCache = new Map<string, Map<string, TaskBucket>>();
@@ -105,6 +108,12 @@ export const syncService = {
           await syncRepo.upsertTask(row);
           upserted++;
         }
+        emit(ctx, {
+          phase: 'store',
+          message: `${listName} — ${tasks.length} task${tasks.length === 1 ? '' : 's'}${visible ? '' : ' (hidden)'}`,
+          count: tasks.length,
+          totalUpserted: upserted,
+        });
       };
 
       // Ingest a sprint list: each task routes to a tenant by its Client Group.
@@ -125,6 +134,12 @@ export const syncService = {
           await syncRepo.upsertTask(mapClickUpTask(task, { tenantId, source: 'sprint', statusMap, sprintId }));
           upserted++;
         }
+        emit(ctx, {
+          phase: 'store',
+          message: `Sprint list — ${tasks.length} task${tasks.length === 1 ? '' : 's'} read, ${skipped} unrouted so far`,
+          count: tasks.length,
+          totalUpserted: upserted,
+        });
       };
 
       const handleList = async (list: { id: string; name: string }, folderTenantId: string | null) => {
@@ -152,8 +167,14 @@ export const syncService = {
         await ingestProject(tenantId, list.id, list.name);
       };
 
+      emit(ctx, { phase: 'scan', message: `Walking ${spaceIds.length} ClickUp space(s)` });
+
       for (const spaceId of spaceIds) {
         const listing = await client.getSpaceListing(spaceId);
+        emit(ctx, {
+          phase: 'scan',
+          message: `Space ${spaceId} — ${listing.folders.length} folder(s), ${listing.folderless.length} loose list(s)`,
+        });
 
         for (const list of listing.folderless) {
           await handleList({ id: list.id, name: list.name }, null);
@@ -161,6 +182,10 @@ export const syncService = {
         for (const folder of listing.folders) {
           // In Delivery, a folder is a client — resolve the tenant once per folder.
           const folderTenantId = await syncRepo.resolveTenantByFolderId(folder.id);
+          emit(ctx, {
+            phase: 'scan',
+            message: `Folder "${folder.name}" — ${folder.lists.length} list(s)${folderTenantId ? '' : ' (no tenant mapped)'}`,
+          });
           for (const list of folder.lists) {
             await handleList({ id: list.id, name: list.name }, folderTenantId);
           }
@@ -168,6 +193,9 @@ export const syncService = {
       }
 
       const status = skipped > 0 ? 'partial' : 'success';
+      if (skipped > 0) {
+        emit(ctx, { phase: 'skip', message: `${skipped} task(s) could not be routed to a tenant`, count: skipped });
+      }
       await syncRepo.finishRun(runId, status, upserted, skipped ? `${skipped} unrouted tasks` : undefined);
       logger.info({ spaces: spaceIds.length, upserted, skipped }, 'Space sync complete');
       return { runId, upserted, skipped, status, spaces: spaceIds.length };
@@ -209,8 +237,8 @@ export const syncService = {
   },
 
   /** Refresh delivery tasks for a single tenant from its mapped project lists. */
-  async syncDelivery(tenantId: string): Promise<SyncResult> {
-    const runId = await syncRepo.startRun('delivery', tenantId);
+  async syncDelivery(tenantId: string, ctx?: SyncContext): Promise<SyncResult> {
+    const runId = await syncRepo.startRun('delivery', tenantId, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
       const listIds = await syncRepo.getDeliveryListIds(tenantId);
@@ -233,8 +261,8 @@ export const syncService = {
    * tasks are routed to a tenant via their "Client Group" field; tasks whose
    * group resolves to no tenant are skipped (counted).
    */
-  async syncSprint(): Promise<SyncResult> {
-    const runId = await syncRepo.startRun('sprint', null);
+  async syncSprint(ctx?: SyncContext): Promise<SyncResult> {
+    const runId = await syncRepo.startRun('sprint', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
       const sprints = await syncRepo.getActiveSprints();
@@ -287,8 +315,8 @@ export const syncService = {
    * (Problem / Who feels the pain / Urgency / Submitter). Before that the board
    * showed a bare title and nobody could tell what they were voting on.
    */
-  async syncWishlist(listId: string): Promise<SyncResult> {
-    const runId = await syncRepo.startRun('wishlist', null);
+  async syncWishlist(listId: string, ctx?: SyncContext): Promise<SyncResult> {
+    const runId = await syncRepo.startRun('wishlist', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
       const tasks = await client.getListTasks(listId);
@@ -356,8 +384,8 @@ export const syncService = {
    * per tenant (purpose='onboarding') pointing at this list id before the
    * onboarding page will show anything — the sync itself doesn't need it.
    */
-  async syncOnboardingRequests(listId: string): Promise<SyncResult> {
-    const runId = await syncRepo.startRun('onboarding', null);
+  async syncOnboardingRequests(listId: string, ctx?: SyncContext): Promise<SyncResult> {
+    const runId = await syncRepo.startRun('onboarding', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
       const statusMapCache = new Map<string, Map<string, TaskBucket>>();
@@ -419,8 +447,9 @@ export const syncService = {
    */
   async syncReports(
     opts: { tenantId?: string; docId?: string } = {},
+    ctx?: SyncContext,
   ): Promise<SyncResult & { tenants: number; docs: number; notified: number }> {
-    const runId = await syncRepo.startRun('reports', opts.tenantId ?? null);
+    const runId = await syncRepo.startRun('reports', opts.tenantId ?? null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
       const tenants = await syncRepo.listReportsFolderTenants(opts.tenantId);
@@ -440,9 +469,12 @@ export const syncService = {
       let docCount = 0;
       const problems: string[] = [];
 
+      emit(ctx, { phase: 'scan', message: `${tenants.length} tenant report folder(s)` });
+
       for (const tenant of tenants) {
         let docs;
         try {
+          emit(ctx, { phase: 'scan', message: `${tenant.name} — reading folder ${tenant.folderId}` });
           docs = await client.listFolderDocs(tenant.folderId);
         } catch (err) {
           // One unreachable folder must not starve the other tenants.
@@ -584,13 +616,15 @@ export const syncService = {
    * account has folder-level access only (the space itself still returns
    * INSUFFICIENT_ACCESS), so `getSpaceListing` would fail here.
    */
-  async syncUseCases(folderId: string): Promise<SyncResult & { lists: number }> {
-    const runId = await syncRepo.startRun('use_cases', null);
+  async syncUseCases(folderId: string, ctx?: SyncContext): Promise<SyncResult & { lists: number }> {
+    const runId = await syncRepo.startRun('use_cases', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
       const lists = await client.getFolderLists(folderId);
       let upserted = 0;
       let skipped = 0;
+
+      emit(ctx, { phase: 'scan', message: `Case Study Library — ${lists.length} list(s)` });
 
       for (const list of lists) {
         const source = shortListName(list.name);
@@ -601,6 +635,12 @@ export const syncService = {
           if (row.isPublished) upserted++;
           else skipped++;
         }
+        emit(ctx, {
+          phase: 'store',
+          message: `${source} — ${tasks.length} case stud${tasks.length === 1 ? 'y' : 'ies'}`,
+          count: tasks.length,
+          totalUpserted: upserted,
+        });
       }
 
       // Every task is stored either way; `skipped` counts those held back from
@@ -625,8 +665,8 @@ export const syncService = {
    * Nightly: refresh portal.sprints from the given Sprints folder (if provided)
    * and recompute which sprint is active by date.
    */
-  async refreshSprints(sprintsFolderId?: string): Promise<{ upserted: number; active: number }> {
-    const runId = await syncRepo.startRun('sprints', null);
+  async refreshSprints(sprintsFolderId?: string, ctx?: SyncContext): Promise<{ upserted: number; active: number }> {
+    const runId = await syncRepo.startRun('sprints', null, ctx?.triggeredBy ?? null);
     try {
       let upserted = 0;
       if (sprintsFolderId) {
