@@ -247,7 +247,15 @@ export const authRepo = {
     };
   },
 
-  /** Persist a hashed refresh token. */
+  /**
+   * Persist a hashed refresh token.
+   *
+   * `app` is stamped 'portal' on every row. `core.refresh_tokens` is shared
+   * with LMS and Support Desk (migration `0036`), so a session that doesn't
+   * name its issuer can't be told apart from theirs — and every query below
+   * filters on it. Hardcoded rather than a parameter: this repository only
+   * ever issues Portal sessions.
+   */
   async storeRefreshToken(input: {
     userId: string;
     tokenHash: string;
@@ -255,40 +263,56 @@ export const authRepo = {
     userAgent?: string;
   }): Promise<void> {
     await pool.query(
-      `insert into core.refresh_tokens (user_id, token_hash, expires_at, user_agent)
-       values ($1, $2, $3, $4)`,
+      `insert into core.refresh_tokens (user_id, token_hash, expires_at, user_agent, app)
+       values ($1, $2, $3, $4, 'portal')`,
       [input.userId, input.tokenHash, input.expiresAt, input.userAgent ?? null],
     );
   },
 
-  /** Find a live (unrevoked, unexpired) refresh token by its hash. */
+  /**
+   * Find a live (unrevoked, unexpired) refresh token by its hash.
+   *
+   * The `app` filter is a semantic guard, not a security one — `token_hash`
+   * carries a global unique index, so another app's row could never be
+   * returned here anyway. It keeps this query honest about what it means once
+   * three apps share the table: "this Portal session", not "some session".
+   */
   async findActiveRefreshToken(
     tokenHash: string,
   ): Promise<{ id: string; userId: string } | null> {
     const { rows } = await pool.query<{ id: string; user_id: string }>(
       `select id, user_id from core.refresh_tokens
-        where token_hash = $1 and revoked_at is null and expires_at > now()`,
+        where token_hash = $1 and app = 'portal'
+          and revoked_at is null and expires_at > now()`,
       [tokenHash],
     );
     const row = rows[0];
     return row ? { id: row.id, userId: row.user_id } : null;
   },
 
-  /** Revoke a single refresh token by hash. Returns true if one was revoked. */
+  /** Revoke a single Portal refresh token by hash. Returns true if one was revoked. */
   async revokeRefreshToken(tokenHash: string): Promise<boolean> {
     const { rowCount } = await pool.query(
       `update core.refresh_tokens set revoked_at = now()
-        where token_hash = $1 and revoked_at is null`,
+        where token_hash = $1 and app = 'portal' and revoked_at is null`,
       [tokenHash],
     );
     return (rowCount ?? 0) > 0;
   },
 
-  /** Revoke every live refresh token for a user (logout-everywhere). */
+  /**
+   * Revoke every live PORTAL refresh token for a user (logout-everywhere).
+   *
+   * Scoped to `app = 'portal'` deliberately: "log me out everywhere" issued
+   * from the Portal ends the user's Portal sessions, and does NOT silently
+   * sign them out of LMS and Support Desk, whose rows now live in this same
+   * table. A genuine cross-app kill is a different operation and would have to
+   * drop the `app` filter on purpose.
+   */
   async revokeAllRefreshTokens(userId: string): Promise<void> {
     await pool.query(
       `update core.refresh_tokens set revoked_at = now()
-        where user_id = $1 and revoked_at is null`,
+        where user_id = $1 and app = 'portal' and revoked_at is null`,
       [userId],
     );
   },
