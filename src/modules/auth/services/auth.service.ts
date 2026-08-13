@@ -70,16 +70,25 @@ export const authService = {
   ): Promise<{ userId: string; email: string } & TokenPair> {
     const { token, password, ...profile } = input;
     const passwordHash = await hashPassword(password);
-    const { userId, email, role } = await authRepo.registerViaInvitation({
+    const { userId, email, role, apps } = await authRepo.registerViaInvitation({
       token,
       passwordHash,
       profile,
     });
+    // Provision only into the apps the invitation actually granted. Both of
+    // these used to fire unconditionally, so every new account was created in
+    // LMS and Support Desk whether anyone wanted it or not — which is why the
+    // effective default was "everyone gets everything".
+    //
     // Best-effort: this person's Portal account is the real one regardless of
     // whether LMS/Support Desk are reachable right now — see cross-app.ts for
     // why neither of these ever throws back into registration.
-    void syncUserToLms({ userId, email, passwordHash, fullName: profile.fullName ?? null, role });
-    void syncUserToSupportDesk({ email, fullName: profile.fullName ?? null, role });
+    if (apps.includes('lms')) {
+      void syncUserToLms({ userId, email, passwordHash, fullName: profile.fullName ?? null, role });
+    }
+    if (apps.includes('support_desk')) {
+      void syncUserToSupportDesk({ email, fullName: profile.fullName ?? null, role });
+    }
     const tokens = await issueTokens(userId, email, userAgent);
     // `email` is returned because the caller never had it: registration is
     // invitation-gated, so the address comes from the invitation row, not from
@@ -101,8 +110,7 @@ export const authService = {
   async updateProfile(userId: string, fields: ProfileFields) {
     const me = await authRepo.updateProfile(userId, fields);
     if (!me) return null;
-    const canOpen = me.is_platform_admin || me.memberships.length > 0;
-    return { ...me, apps: canOpen ? (['portal', 'lms', 'support'] as const) : [] };
+    return { ...me, apps: await authRepo.listActiveApps(userId) };
   },
 
   /** Verify credentials and issue tokens. */
@@ -191,8 +199,9 @@ export const authService = {
   async me(userId: string): Promise<MeResponse | null> {
     const me = await authRepo.getMe(userId);
     if (!me) return null;
-    const canOpen = me.is_platform_admin || me.memberships.length > 0;
-    return { ...me, apps: canOpen ? ['portal', 'lms', 'support'] : [] };
+    // Read from core.app_access rather than inferring from memberships, so a
+    // per-app grant or revoke is actually reflected here.
+    return { ...me, apps: await authRepo.listActiveApps(userId) };
   },
 
   async acceptInvitation(userId: string, userEmail: string, token: string) {

@@ -172,18 +172,27 @@ export const onboardingRepo = {
   },
 
   /** Create a pending invitation for a tenant (used by the admin invite endpoint). */
+  /**
+   * `apps` records which products the invitee should get when they accept.
+   * Omitted means the column default, `{portal}` — inviting someone gives them
+   * the Portal and nothing else unless the inviter deliberately asks for more.
+   * Registration used to provision every new account into LMS and Support Desk
+   * unconditionally, whether or not anyone wanted that.
+   */
   async createInvitation(
     client: PoolClient,
     tenantId: string,
     email: string,
     role: string,
     invitedBy: string | null,
+    apps?: string[],
   ): Promise<{ id: string; token: string }> {
     const { rows } = await client.query<{ id: string; token: string }>(
-      `insert into core.invitations (tenant_id, email, role, invited_by)
-       values ($1, $2, $3::core.user_role, $4)
+      `insert into core.invitations (tenant_id, email, role, invited_by, apps)
+       values ($1, $2, $3::core.user_role, $4,
+               coalesce($5::core.app_type[], '{portal}'::core.app_type[]))
        returning id, token`,
-      [tenantId, email, role, invitedBy],
+      [tenantId, email, role, invitedBy, apps ?? null],
     );
     return rows[0]!;
   },

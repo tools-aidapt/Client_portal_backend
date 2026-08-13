@@ -70,6 +70,19 @@ adminClientsRoutes.patch(
   asyncHandler(membersController.update),
 );
 
+// Which apps this person may open. Separate from the role PATCH above because
+// it changes reach across products, not standing inside one client.
+adminClientsRoutes.patch(
+  '/:id/members/:userId/apps',
+  validate({
+    params: memberParams,
+    body: z.object({
+      apps: z.array(z.enum(['portal', 'lms', 'support_desk'])).max(3),
+    }),
+  }),
+  asyncHandler(membersController.setApps),
+);
+
 adminClientsRoutes.put(
   '/:id/clickup-mapping',
   validate({

@@ -86,7 +86,7 @@ export const authRepo = {
     token: string;
     passwordHash: string;
     profile: ProfileFields;
-  }): Promise<{ userId: string; email: string; tenantId: string; role: string }> {
+  }): Promise<{ userId: string; email: string; tenantId: string; role: string; apps: string[] }> {
     return withTransaction(async (client) => {
       const { rows } = await client.query<{
         id: string;
@@ -95,9 +95,10 @@ export const authRepo = {
         role: string;
         status: string;
         invited_by: string | null;
+        apps: string[] | null;
         expired: boolean;
       }>(
-        `select id, tenant_id, email, role, status, invited_by,
+        `select id, tenant_id, email, role, status, invited_by, apps,
                 (expires_at <= now()) as expired
            from core.invitations where token = $1 for update`,
         [input.token],
@@ -151,14 +152,28 @@ export const authRepo = {
         `update core.invitations set status = 'accepted', accepted_at = now() where id = $1`,
         [inv.id],
       );
+      // Grant exactly the apps the inviter chose, in the same transaction that
+      // creates the account — so a half-provisioned user cannot exist. Portal is
+      // always included: the invitation is to the Portal, and an account that
+      // cannot open it has nowhere to accept from.
+      const apps = Array.from(new Set(['portal', ...(inv.apps ?? [])]));
+      await client.query(
+        `insert into core.app_access (user_id, app, status, granted_by)
+         select $1, unnest($2::core.app_type[]), 'active', $3
+         on conflict (user_id, app)
+           do update set status = 'active', revoked_at = null`,
+        [userId, apps, inv.invited_by],
+      );
+
       await client.query(
         `insert into core.audit_log (actor_id, tenant_id, action, target, metadata)
          values ($1, $2, 'invitation.registered', $3,
-                 jsonb_build_object('invitation_id', $3::text, 'role', $4::text))`,
-        [userId, inv.tenant_id, inv.id, inv.role],
+                 jsonb_build_object('invitation_id', $3::text, 'role', $4::text,
+                                    'apps', to_jsonb($5::text[])))`,
+        [userId, inv.tenant_id, inv.id, inv.role, apps],
       );
 
-      return { userId, email: inv.email, tenantId: inv.tenant_id, role: inv.role };
+      return { userId, email: inv.email, tenantId: inv.tenant_id, role: inv.role, apps };
     });
   },
 
@@ -342,6 +357,31 @@ export const authRepo = {
       [userId],
     );
     return rows[0] ?? null;
+  },
+
+  /**
+   * The apps this identity may open, read from core.app_access — the single
+   * place that answers the question for all three products.
+   *
+   * `/auth/me` used to return a hardcoded ['portal','lms','support'] to anyone
+   * with a membership or the platform-admin flag, so the Portal offered every
+   * app to everyone and no per-app grant could ever be expressed.
+   *
+   * The enum stores `support_desk`; the API has always said `support`, and the
+   * frontend reads that, so the name is mapped here rather than changing a
+   * published contract.
+   */
+  async listActiveApps(userId: string): Promise<Array<'portal' | 'lms' | 'support'>> {
+    const { rows } = await pool.query<{ app: string }>(
+      `select app::text as app
+         from core.app_access
+        where user_id = $1 and status = 'active'
+        order by app`,
+      [userId],
+    );
+    return rows.map((r) => (r.app === 'support_desk' ? 'support' : r.app)) as Array<
+      'portal' | 'lms' | 'support'
+    >;
   },
 
   /** Update editable profile fields (null = leave unchanged). Returns fresh /me. */

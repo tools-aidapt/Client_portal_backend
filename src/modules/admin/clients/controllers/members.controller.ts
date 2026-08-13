@@ -51,4 +51,21 @@ export const membersController = {
 
     res.status(StatusCodes.OK).json(ok(member));
   },
+
+  /**
+   * Aidapt setting which apps one client's person may open. Same operation the
+   * org's own admin has via PATCH /team/:userId/apps, but reachable for any
+   * tenant rather than only the caller's own.
+   */
+  async setApps(req: Request, res: Response): Promise<void> {
+    const { apps } = req.body as { apps: string[] };
+    const member = await membersRepo.setAppAccess(
+      req.params.id!,
+      req.params.userId!,
+      apps,
+      req.auth?.user.id ?? null,
+    );
+    if (!member) throw new NotFoundError('That person is not a member of this client');
+    res.status(StatusCodes.OK).json(ok(member));
+  },
 };

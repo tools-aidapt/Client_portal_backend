@@ -104,6 +104,9 @@ invitationRoutes.post(
     body: z.object({
       email: z.string().trim().toLowerCase().email(),
       role: z.enum(['member', 'admin']).default('member'),
+      // Which products they get on acceptance. Portal is implied; omitting this
+      // grants the Portal only.
+      apps: z.array(z.enum(['portal', 'lms', 'support_desk'])).max(3).optional(),
     }),
   }),
   asyncHandler(invitationsController.inviteToMyOrg),

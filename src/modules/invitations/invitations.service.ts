@@ -16,6 +16,8 @@ export const invitationsService = {
     email: string;
     role: string;
     invitedBy: string | null;
+    /** Apps to grant on acceptance. Omitted falls back to the column default, {portal}. */
+    apps?: string[];
   }): Promise<{ invitationId: string }> {
     const inv = await withTransaction(async (client) => {
       const created = await onboardingRepo.createInvitation(
@@ -24,6 +26,7 @@ export const invitationsService = {
         input.email,
         input.role,
         input.invitedBy,
+        input.apps,
       );
       await onboardingRepo.enqueueOutbox(client, {
         aggregate: 'invitation',
