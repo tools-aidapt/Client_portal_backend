@@ -68,7 +68,9 @@ export const clientsController = {
    * here, the caller's own membership there).
    */
   async listInvitations(req: Request, res: Response): Promise<void> {
-    const invitations = await invitationsRepo.list(req.params.id!);
+    // Platform admins manage the whole history, including revoked and
+    // expired rows. The client-facing Team view shows only live ones.
+    const invitations = await invitationsRepo.list(req.params.id!, { includeInactive: true });
     res.status(StatusCodes.OK).json(ok({ invitations }));
   },
 

@@ -16,7 +16,9 @@ import type { UpdateMemberBody } from '../validators/clients.validators.js';
  */
 export const membersController = {
   async list(req: Request, res: Response): Promise<void> {
-    const members = await membersRepo.list(req.params.id!);
+    // Platform admins see suspended members too — they are the ones who
+    // restore them. The client-facing Team view does not.
+    const members = await membersRepo.list(req.params.id!, { includeSuspended: true });
     res.status(StatusCodes.OK).json(ok({ members }));
   },
 

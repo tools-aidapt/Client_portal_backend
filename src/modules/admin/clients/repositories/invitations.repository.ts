@@ -64,14 +64,33 @@ export const invitationsRepo = {
    * ones too — an audit trail of who was invited and what became of it is the
    * point, not just a to-do list of outstanding ones.
    */
-  async list(tenantId: string): Promise<InvitationRow[]> {
+  /**
+   * Invitations for one client.
+   *
+   * Only live ones by default. A client's Team page asks "who is still waiting
+   * to accept" — a revoked or long-expired row answers a different question and
+   * is only noise there, which is how a list of dead invitations ended up under
+   * a heading that said "Nothing waiting to be accepted". Platform admins pass
+   * `includeInactive` because withdrawing and re-sending is their job.
+   *
+   * Filtered on the EFFECTIVE status, not the stored one: `status` is only
+   * advanced to 'expired' lazily, so a row can still read 'pending' well after
+   * `expires_at` has passed.
+   */
+  async list(
+    tenantId: string,
+    { includeInactive = false }: { includeInactive?: boolean } = {},
+  ): Promise<InvitationRow[]> {
     const { rows } = await pool.query<InvitationRow>(
-      `select ${SELECT_COLUMNS}
-         from core.invitations i
-         left join core.profiles p on p.id = i.invited_by
-        where i.tenant_id = $1
-        order by i.created_at desc`,
-      [tenantId],
+      `select * from (
+         select ${SELECT_COLUMNS}
+           from core.invitations i
+           left join core.profiles p on p.id = i.invited_by
+          where i.tenant_id = $1
+       ) inv
+        where $2 or inv.effective_status = 'pending'
+        order by inv.created_at desc`,
+      [tenantId, includeInactive],
     );
     return rows;
   },

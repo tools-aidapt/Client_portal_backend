@@ -42,15 +42,28 @@ const MEMBER_COLUMNS = `m.user_id, p.full_name, c.email, m.role, m.status, m.joi
  */
 export const membersRepo = {
   /** Every member of one tenant, by display name. */
-  async list(tenantId: string): Promise<TenantMember[]> {
+  /**
+   * Members of one client.
+   *
+   * Suspended memberships are hidden by default. A client's own Team page is
+   * the roster of who works there now — a suspended row is someone who has been
+   * removed, and showing them as if they were staff was how retired demo
+   * accounts ended up visible to real clients. Platform admins pass
+   * `includeSuspended` because they need to see one in order to restore it.
+   */
+  async list(
+    tenantId: string,
+    { includeSuspended = false }: { includeSuspended?: boolean } = {},
+  ): Promise<TenantMember[]> {
     const { rows } = await pool.query<TenantMember>(
       `select ${MEMBER_COLUMNS}
          from core.memberships m
          join core.profiles p on p.id = m.user_id
          left join core.user_credentials c on c.user_id = m.user_id
         where m.tenant_id = $1
+          and ($2 or m.status <> 'suspended')
         order by p.full_name asc nulls last, c.email asc nulls last`,
-      [tenantId],
+      [tenantId, includeSuspended],
     );
     return rows;
   },
