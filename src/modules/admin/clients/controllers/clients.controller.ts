@@ -1,10 +1,11 @@
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { NotFoundError, UnauthorizedError } from '@common/errors/index.js';
+import { AppError, NotFoundError, UnauthorizedError } from '@common/errors/index.js';
 import { ok } from '@common/utils/api-response.js';
 import { invitationsService } from '@modules/invitations/invitations.service.js';
 import { onboardingService } from '../services/onboarding.service.js';
 import { onboardingRepo } from '../repositories/onboarding.repository.js';
+import { invitationsRepo } from '../repositories/invitations.repository.js';
 import type { RegisterClientBody } from '../validators/clients.validators.js';
 
 export const clientsController = {
@@ -58,6 +59,44 @@ export const clientsController = {
       firstName,
     });
     res.status(StatusCodes.CREATED).json(ok({ ...result, email, role }));
+  },
+
+  /**
+   * Everything this client has been sent, and what became of it. The
+   * platform-admin counterpart of `GET /team/invitations`, sharing its
+   * repository — the only difference is where the tenant id comes from (path
+   * here, the caller's own membership there).
+   */
+  async listInvitations(req: Request, res: Response): Promise<void> {
+    const invitations = await invitationsRepo.list(req.params.id!);
+    res.status(StatusCodes.OK).json(ok({ invitations }));
+  },
+
+  /**
+   * Withdraw an invitation. 404 when it isn't this client's (an id must not
+   * confirm it exists under some other tenant); 409 with the real state when
+   * it is theirs but can't be revoked — already accepted, already revoked.
+   */
+  async revokeInvitation(req: Request, res: Response): Promise<void> {
+    const tenantId = req.params.id!;
+    const id = req.params.invitationId!;
+
+    const revoked = await invitationsRepo.revoke(tenantId, id);
+    if (revoked) {
+      res.status(StatusCodes.OK).json(ok(revoked));
+      return;
+    }
+
+    const current = await invitationsRepo.statusOf(tenantId, id);
+    if (!current) throw new NotFoundError('Invitation not found');
+    if (current === 'accepted') {
+      throw new AppError(
+        'That invitation has already been accepted — change their access from the members list instead',
+        409,
+        'INVITATION_ALREADY_ACCEPTED',
+      );
+    }
+    throw new AppError(`That invitation is already ${current}`, 409, 'INVITATION_NOT_PENDING');
   },
 
   /**
