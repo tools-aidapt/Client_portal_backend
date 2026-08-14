@@ -98,7 +98,17 @@ export const authRepo = {
         apps: string[] | null;
         expired: boolean;
       }>(
-        `select id, tenant_id, email, role, status, invited_by, apps,
+        // `apps` is cast to text[] deliberately. It is declared
+        // `core.app_type[]`, and node-postgres ships no parser for a
+        // user-defined ENUM array, so it hands back the RAW string
+        // '{portal,lms,support_desk}' rather than an array. The caller spreads
+        // this value (`[...inv.apps]`), which on a string spreads it into
+        // individual CHARACTERS — producing ['{','p','o',…] and then failing
+        // with `invalid input value for enum core.app_type: "{"`. That made
+        // every invitation registration a 500. A plain text[] has a built-in
+        // parser and comes back as a real array, so the cast is the whole fix.
+        `select id, tenant_id, email, role, status, invited_by,
+                apps::text[] as apps,
                 (expires_at <= now()) as expired
            from core.invitations where token = $1 for update`,
         [input.token],
