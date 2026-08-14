@@ -53,9 +53,28 @@ adminClientsRoutes.post(
   asyncHandler(clientsController.inviteUser),
 );
 
+// The read side of invitations: what has been sent to this client and what
+// became of it, plus withdrawing one that hasn't been used. POST rather than
+// DELETE for revoke — the row is kept and its status is what
+// `registerViaInvitation` reads to refuse the token; deleting it would lose
+// the record of who was invited.
+adminClientsRoutes.get(
+  '/:id/invitations',
+  validate({ params: tenantIdParam }),
+  asyncHandler(clientsController.listInvitations),
+);
+
+adminClientsRoutes.post(
+  '/:id/invitations/:invitationId/revoke',
+  validate({
+    params: tenantIdParam.extend({ invitationId: z.string().uuid() }),
+  }),
+  asyncHandler(clientsController.revokeInvitation),
+);
+
 // --- Members (who already has access to this client's Portal) ---
-// The read side of invitations: `/:id/invitations` adds a person, these two
-// show and adjust the people who already accepted.
+// `/:id/invitations` adds a person, these two show and adjust the people who
+// already accepted.
 
 adminClientsRoutes.get(
   '/:id/members',

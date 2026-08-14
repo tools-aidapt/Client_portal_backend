@@ -25,6 +25,18 @@ teamRoutes.use(authenticate, requireTenantRole('admin'));
 
 teamRoutes.get('/', asyncHandler(teamController.list));
 
+// Invitations this org has sent, and withdrawing one that hasn't been used.
+// Revoking is a POST rather than a DELETE: the row is kept, its status
+// changes, and `registerViaInvitation` reads that status to refuse the token.
+// A DELETE would imply the record goes away, which would lose the audit trail
+// of who was invited and what happened to it.
+teamRoutes.get('/invitations', asyncHandler(teamController.listInvitations));
+teamRoutes.post(
+  '/invitations/:invitationId/revoke',
+  validate({ params: z.object({ invitationId: z.string().uuid() }) }),
+  asyncHandler(teamController.revokeInvitation),
+);
+
 // 'portal' is accepted but always implied — setAppAccess never revokes it.
 teamRoutes.patch(
   '/:userId/apps',

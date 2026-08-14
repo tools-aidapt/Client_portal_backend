@@ -1,8 +1,9 @@
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { NotFoundError, UnauthorizedError } from '@common/errors/index.js';
+import { AppError, NotFoundError, UnauthorizedError } from '@common/errors/index.js';
 import { ok } from '@common/utils/api-response.js';
 import { membersRepo } from '@modules/admin/clients/repositories/members.repository.js';
+import { invitationsRepo } from '@modules/admin/clients/repositories/invitations.repository.js';
 
 export const teamController = {
   /**
@@ -44,5 +45,56 @@ export const teamController = {
     );
     if (!member) throw new NotFoundError('That person is not a member of your organisation');
     res.status(StatusCodes.OK).json(ok(member));
+  },
+
+  /**
+   * Invitations this org has sent, and what became of each.
+   *
+   * Nothing surfaced these before, so an org admin could send an invitation
+   * and then had no way to see whether it had been accepted, or to stop it.
+   * Tenant comes from `req.tenant.id` — the caller's own membership — so this
+   * cannot read another client's invitations.
+   */
+  async listInvitations(req: Request, res: Response): Promise<void> {
+    if (!req.tenant) throw new UnauthorizedError();
+    const invitations = await invitationsRepo.list(req.tenant.id);
+    res.status(StatusCodes.OK).json(ok({ invitations }));
+  },
+
+  /**
+   * Withdraw an invitation this org sent.
+   *
+   * The distinction between 404 and 409 is deliberate: an id that belongs to
+   * another tenant (or to nothing) must be indistinguishable from a typo, and
+   * must NOT reveal that it exists elsewhere; whereas an invitation of this
+   * org's that simply cannot be revoked — already accepted, already revoked —
+   * deserves a specific reason so the admin knows the state rather than
+   * assuming the button is broken.
+   */
+  async revokeInvitation(req: Request, res: Response): Promise<void> {
+    if (!req.tenant) throw new UnauthorizedError();
+    const tenantId = req.tenant.id;
+    const id = req.params.invitationId!;
+
+    const revoked = await invitationsRepo.revoke(tenantId, id);
+    if (revoked) {
+      res.status(StatusCodes.OK).json(ok(revoked));
+      return;
+    }
+
+    const current = await invitationsRepo.statusOf(tenantId, id);
+    if (!current) throw new NotFoundError('Invitation not found');
+    if (current === 'accepted') {
+      throw new AppError(
+        'That invitation has already been accepted — remove their access from the team list instead',
+        409,
+        'INVITATION_ALREADY_ACCEPTED',
+      );
+    }
+    throw new AppError(
+      `That invitation is already ${current}`,
+      409,
+      'INVITATION_NOT_PENDING',
+    );
   },
 };

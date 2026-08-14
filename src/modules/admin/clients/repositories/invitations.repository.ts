@@ -1,0 +1,121 @@
+import { pool } from '@infra/db/pool.js';
+
+/**
+ * Reading and revoking invitations.
+ *
+ * `core.invitations` has always modelled a `revoked` status, and
+ * `registerViaInvitation` has always refused a revoked token
+ * ("Invitation was revoked") — but nothing in the codebase could ever SET it.
+ * There was no list endpoint either, so 22 invitations existed that nobody
+ * could see and no one could withdraw: send one to the wrong address and the
+ * token stayed usable for its full 14 days.
+ *
+ * Tenant-scoped by construction. Every query takes `tenantId` and every write
+ * is keyed on `(id, tenant_id)`, so the client-facing route (which resolves
+ * the tenant from the caller's own membership) and the platform-admin route
+ * (which takes it from the path) can share this without the former being able
+ * to reach another client's rows.
+ */
+
+export interface InvitationRow {
+  id: string;
+  email: string;
+  role: string;
+  /** Raw column value — may say 'pending' for something already expired. */
+  status: string;
+  /** What the status ACTUALLY is once expiry is taken into account. */
+  effective_status: 'pending' | 'accepted' | 'revoked' | 'expired';
+  apps: string[];
+  invited_by_name: string | null;
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+}
+
+/**
+ * `status` is only advanced to 'expired' lazily, when someone tries to use the
+ * token — so a row can sit at 'pending' long after `expires_at` has passed.
+ * Showing that as "pending" would tell an admin an invitation is still live
+ * when it is already dead, so the effective status is computed here rather
+ * than left to each caller to remember.
+ *
+ * `apps` is cast to text[] for the same reason it is in auth.repository:
+ * node-postgres has no parser for a user-defined ENUM array and would hand
+ * back the raw string '{portal,lms}'.
+ */
+const SELECT_COLUMNS = `
+  i.id,
+  i.email,
+  i.role::text            as role,
+  i.status::text          as status,
+  case
+    when i.status = 'pending' and i.expires_at <= now() then 'expired'
+    else i.status::text
+  end                     as effective_status,
+  i.apps::text[]          as apps,
+  p.full_name             as invited_by_name,
+  i.created_at,
+  i.expires_at,
+  i.accepted_at`;
+
+export const invitationsRepo = {
+  /**
+   * Every invitation for a tenant, newest first. Returns accepted and revoked
+   * ones too — an audit trail of who was invited and what became of it is the
+   * point, not just a to-do list of outstanding ones.
+   */
+  async list(tenantId: string): Promise<InvitationRow[]> {
+    const { rows } = await pool.query<InvitationRow>(
+      `select ${SELECT_COLUMNS}
+         from core.invitations i
+         left join core.profiles p on p.id = i.invited_by
+        where i.tenant_id = $1
+        order by i.created_at desc`,
+      [tenantId],
+    );
+    return rows;
+  },
+
+  /**
+   * Withdraw a pending invitation. Returns the updated row, or null when there
+   * is nothing to revoke.
+   *
+   * Guarded on `status = 'pending'` as well as the id, so revoking is
+   * idempotent-ish and cannot rewrite history: an already-accepted invitation
+   * stays 'accepted' (the person has an account — revoking the invitation
+   * would neither remove it nor be true), and a second revoke is a no-op
+   * rather than an error the UI has to special-case.
+   *
+   * Keyed on `(id, tenant_id)` so addressing another client's invitation
+   * returns null — a 404 — instead of touching it.
+   */
+  async revoke(tenantId: string, invitationId: string): Promise<InvitationRow | null> {
+    const { rows } = await pool.query<{ id: string }>(
+      `update core.invitations
+          set status = 'revoked'
+        where id = $1 and tenant_id = $2 and status = 'pending'
+        returning id`,
+      [invitationId, tenantId],
+    );
+    if (rows.length === 0) return null;
+
+    const { rows: full } = await pool.query<InvitationRow>(
+      `select ${SELECT_COLUMNS}
+         from core.invitations i
+         left join core.profiles p on p.id = i.invited_by
+        where i.id = $1`,
+      [invitationId],
+    );
+    return full[0] ?? null;
+  },
+
+  /** Whether an invitation exists for this tenant at all — separates 404 from 409. */
+  async statusOf(tenantId: string, invitationId: string): Promise<string | null> {
+    const { rows } = await pool.query<{ status: string }>(
+      `select status::text as status from core.invitations
+        where id = $1 and tenant_id = $2`,
+      [invitationId, tenantId],
+    );
+    return rows[0]?.status ?? null;
+  },
+};

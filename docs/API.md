@@ -82,7 +82,7 @@ Each endpoint below notes the minimum role.
 | POST | `/auth/logout-all` | any signed-in | revoke all refresh tokens |
 | GET | `/auth/me` | any signed-in | `{ id, full_name, job_title, department, phone, interests, avatar_url, is_platform_admin, memberships[], apps[] }` |
 | PATCH | `/auth/me` | any signed-in | update profile fields (`fullName?, jobTitle?, department?, phone?, avatarUrl?, interests?[], locale?`) |
-| POST | `/auth/me/avatar` | any signed-in | multipart form field `file` (image, ≤2MB) → `{ avatar_url }` |
+| POST | `/auth/me/avatar` | any signed-in | multipart form field `file` (image, ≤10MB) → `{ avatar_url }` |
 | POST | `/invitations` | member_pro | org admin invites into their own tenant: `{ email, role: member\|admin, apps?, first_name? }` (no super_admin) → emails the Partner Portal welcome (subject "Your Aidapt Partner Portal login"). `first_name` is the greeting; omitted, it is guessed from the email |
 | POST | `/invitations/accept` | any signed-in | `{ token }` — existing user accepts an invite, then re-`login`/`refresh` |
 

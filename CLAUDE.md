@@ -130,6 +130,37 @@ email is registered, to avoid leaking account existence.
   `POST /auth/register` needs the token + collects profile (fullName, jobTitle,
   department, phone, avatarUrl, interests[]). `PATCH /auth/me` edits profile.
   Profile fields added in migration `0015`.
+  - [x] **Invitations can now be SEEN and WITHDRAWN — added 2026-08-15.**
+    `core.invitations` has always modelled a `revoked` status and
+    `registerViaInvitation` has always refused a revoked token, but **nothing
+    could set it and nothing could list invitations**: two INSERTs, four
+    UPDATEs (all `accepted`/`expired`, during registration) and one SELECT by
+    token were the entire surface. Send one to the wrong address and it stayed
+    usable for its full 14 days with no way to see it or stop it.
+    `invitations.repository.ts` adds `list`/`revoke`/`statusOf`, exposed twice:
+    `GET|POST /team/invitations[/:id/revoke]` (org admin, tenant resolved from
+    the caller's own membership) and `GET|POST
+    /admin/clients/:id/invitations[/:invitationId/revoke]` (platform admin,
+    tenant from the path). Frontend: an Invitations card on `/team`.
+    - **`effective_status`, not `status`.** The column only advances to
+      `expired` lazily, when someone tries the token, so rows sit at `pending`
+      long after `expires_at` — rendering that raw would tell an admin a dead
+      invitation is still live. The repo computes the real state in SQL.
+    - **Revoke is a POST, and the row is KEPT.** `status = 'revoked'` is
+      precisely what registration reads to refuse the token; deleting the row
+      would lose the audit trail AND make the token valid again by turning
+      "revoked" into "not found".
+    - Guarded on `status = 'pending'`, so an accepted invitation is never
+      rewritten (409, pointing at the members list instead) and a double
+      revoke is a no-op. Writes are keyed `(id, tenant_id)`, so another
+      client's id 404s rather than being touched.
+    - Verified live: `scripts/smoke-invitations.ts`, 16/16 — including that a
+      revoked token genuinely fails registration and creates no account.
+    - **Live state when this shipped: 22 expired, 2 accepted, 0 pending** —
+      i.e. everyone invited before this week never got in, which is the
+      combined effect of the missing `/register` page (fixed 2026-08-10) and
+      the registration 500 (fixed 2026-08-14). They need re-inviting once the
+      fix is deployed.
   - [x] **The invite link had nowhere to land — fixed 2026-08-10.** Invitation
     emails point at `{PORTAL_BASE_URL}/register?token=…`, but the frontend had
     **no `/register` route or page at all**, so every invite link fell through
@@ -238,7 +269,7 @@ email is registered, to avoid leaking account existence.
 - [x] **Roles** — added `org_admin` (rank 4, migration `0016`): per-tenant admin,
   can invite within own org via `POST /invitations` (not super_admin). Onboarding's
   first client invite is now `org_admin`. Admin invite can grant any role.
-- [x] **Avatars** — `POST /auth/me/avatar` (multer, ≤2MB image) → public `avatars`
+- [x] **Avatars** — `POST /auth/me/avatar` (multer, ≤10MB image) → public `avatars`
   bucket (migration `0017`) → sets `profiles.avatar_url` (cache-busted).
 - [x] **Use Cases** (migrations `0021`–`0023`) — `GET /usecases` (member_plus) is
   the **tenant-agnostic** catalogue of automations Aidapt can build, plus

@@ -62,10 +62,20 @@ authRoutes.patch(
   asyncHandler(authController.updateMe),
 );
 
-// Avatar upload (multipart form field "file", images only, max 2MB).
+// Avatar upload (multipart form field "file", images only, max 10MB).
+//
+// Raised from 2MB: a photo straight off a phone routinely exceeds 2MB, so
+// people accepting an invitation were being told to go and shrink an ordinary
+// picture before they could finish signing up.
+//
+// 10MB is safe at the storage layer — the `avatars` bucket sets no
+// `file_size_limit` of its own (migration 0017), so it inherits the project
+// default, which is well above this. It is memory storage, though: the file is
+// buffered in the process before being forwarded to Supabase, so this number is
+// also a per-request memory cost and shouldn't be raised casually.
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (file.mimetype.startsWith('image/')) cb(null, true);
     else cb(new BadRequestError('Only image files are allowed'));
