@@ -83,7 +83,7 @@ Each endpoint below notes the minimum role.
 | GET | `/auth/me` | any signed-in | `{ id, full_name, job_title, department, phone, interests, avatar_url, is_platform_admin, memberships[], apps[] }` |
 | PATCH | `/auth/me` | any signed-in | update profile fields (`fullName?, jobTitle?, department?, phone?, avatarUrl?, interests?[], locale?`) |
 | POST | `/auth/me/avatar` | any signed-in | multipart form field `file` (image, ≤2MB) → `{ avatar_url }` |
-| POST | `/invitations` | member_pro | org admin invites into their own tenant: `{ email, role: member\|member_plus\|member_pro }` (no super_admin) → emails the link |
+| POST | `/invitations` | member_pro | org admin invites into their own tenant: `{ email, role: member\|admin, apps?, first_name? }` (no super_admin) → emails the Partner Portal welcome (subject "Your Aidapt Partner Portal login"). `first_name` is the greeting; omitted, it is guessed from the email |
 | POST | `/invitations/accept` | any signed-in | `{ token }` — existing user accepts an invite, then re-`login`/`refresh` |
 
 ## Portal (client-facing, tenant-scoped)
@@ -178,7 +178,7 @@ Sync: `POST /internal/sync/reports` with `{}`.
 | Method | Path | Body |
 |---|---|---|
 | POST | `/admin/clients` | `{ name, email_domains[], product_tier?, clickup_folder_id?, clickup_client_group?, admin_email, sigma_ready }` |
-| POST | `/admin/clients/:id/invitations` | `{ email, role }` — any role incl. `org_admin` / `super_admin`; emails the registration link via n8n |
+| POST | `/admin/clients/:id/invitations` | `{ email, role, first_name? }` — any role incl. `org_admin` / `super_admin`; emails the Partner Portal welcome via n8n (`first_name` optional, same as `/invitations`) |
 | POST | `/admin/clients/:id/automations` | `{ n8n_workflow_id, name, description?, is_client_visible? }` — register a workflow |
 | GET | `/admin/clients` | list tenants |
 | GET | `/admin/clients/:id/onboarding` | onboarding state machine |

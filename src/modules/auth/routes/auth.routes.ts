@@ -107,6 +107,7 @@ invitationRoutes.post(
       // Which products they get on acceptance. Portal is implied; omitting this
       // grants the Portal only.
       apps: z.array(z.enum(['portal', 'lms', 'support_desk'])).max(3).optional(),
+      first_name: z.string().trim().min(1).max(80).optional(),
     }),
   }),
   asyncHandler(invitationsController.inviteToMyOrg),

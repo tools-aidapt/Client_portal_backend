@@ -2,6 +2,19 @@ import { pool } from '@infra/db/pool.js';
 import { config } from '@config/index.js';
 import { logger } from '@infra/logger/index.js';
 import { AppError } from '@common/errors/index.js';
+import {
+  DEFAULT_AIDAPT_LEAD_NAME,
+  DEFAULT_AIDAPT_LEAD_TITLE,
+  DEFAULT_APP_3_LINE,
+  DEFAULT_APP_3_NAME,
+  DEFAULT_SUPPORT_EMAIL,
+  guessFirstName,
+  renderInviteEmail,
+} from './invite-email.template.js';
+
+export type InviteEmailExtras = {
+  firstName?: string;
+};
 
 /**
  * Sends the invite email right now, instead of waiting for whatever drains
@@ -16,9 +29,13 @@ import { AppError } from '@common/errors/index.js';
  * one. Never throws back into the caller: the invitation itself is valid the
  * moment its row exists, independent of whether the email has gone out yet.
  */
-export async function sendInviteEmailNow(invitationId: string, token: string): Promise<void> {
+export async function sendInviteEmailNow(
+  invitationId: string,
+  token: string,
+  extras?: InviteEmailExtras,
+): Promise<void> {
   try {
-    await sendInviteEmail(token);
+    await sendInviteEmail(token, extras);
     await pool.query(
       `update core.outbox set status = 'done'
         where idempotency_key = $1 and status = 'pending'`,
@@ -30,14 +47,16 @@ export async function sendInviteEmailNow(invitationId: string, token: string): P
 }
 
 /**
- * Dispatch an invitation email via the n8n webhook. n8n owns the template and
- * delivery; we send it the recipient, the org, the role, and the registration
- * link (which carries the invite token).
+ * Dispatch an invitation email via the n8n webhook. We own the copy (subject,
+ * preheader, html, text, and the merge fields from "Email 2, rewritten"); n8n
+ * delivers. The email node should send `$json.subject` and `$json.html` (plain
+ * `$json.text` as the fallback), not a hardcoded body — otherwise a rewrite
+ * here never reaches the inbox.
  *
  * Called by the `email.invite` outbox handler (the retry path) and by
  * `sendInviteEmailNow` (the immediate path), so throwing triggers a retry.
  */
-export async function sendInviteEmail(token: string): Promise<void> {
+export async function sendInviteEmail(token: string, extras?: InviteEmailExtras): Promise<void> {
   const { rows } = await pool.query<{
     email: string;
     role: string;
@@ -66,6 +85,21 @@ export async function sendInviteEmail(token: string): Promise<void> {
 
   const base = (config.web.portalBaseUrl ?? '').replace(/\/$/, '');
   const inviteUrl = `${base}/register?token=${token}`;
+  const firstName = extras?.firstName?.trim() || guessFirstName(inv.email);
+
+  const rendered = renderInviteEmail({
+    firstName,
+    portalUrl: inviteUrl,
+    loginEmail: inv.email,
+    trackName: inv.tenant_name,
+    app3Name: DEFAULT_APP_3_NAME,
+    app3Line: DEFAULT_APP_3_LINE,
+    companyName: inv.tenant_name,
+    accessEndDate: null,
+    supportEmail: DEFAULT_SUPPORT_EMAIL,
+    aidaptLeadName: DEFAULT_AIDAPT_LEAD_NAME,
+    aidaptLeadTitle: DEFAULT_AIDAPT_LEAD_TITLE,
+  });
 
   const res = await fetch(webhook, {
     method: 'POST',
@@ -77,6 +111,22 @@ export async function sendInviteEmail(token: string): Promise<void> {
       invite_url: inviteUrl,
       token,
       expires_at: inv.expires_at,
+      subject: rendered.subject,
+      preheader: rendered.preheader,
+      html: rendered.html,
+      text: rendered.text,
+      body: rendered.html,
+      first_name: firstName,
+      portal_url: inviteUrl,
+      login_email: inv.email,
+      track_name: inv.tenant_name,
+      app_3_name: DEFAULT_APP_3_NAME,
+      app_3_line: DEFAULT_APP_3_LINE,
+      company_name: inv.tenant_name,
+      access_end_date: null,
+      support_email: DEFAULT_SUPPORT_EMAIL,
+      aidapt_lead_name: DEFAULT_AIDAPT_LEAD_NAME,
+      aidapt_lead_title: DEFAULT_AIDAPT_LEAD_TITLE,
     }),
   });
 

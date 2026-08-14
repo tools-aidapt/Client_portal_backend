@@ -18,6 +18,8 @@ export const invitationsService = {
     invitedBy: string | null;
     /** Apps to grant on acceptance. Omitted falls back to the column default, {portal}. */
     apps?: string[];
+    /** Optional given name for "Hi {{first_name}},". Guessed from the email if omitted. */
+    firstName?: string;
   }): Promise<{ invitationId: string }> {
     const inv = await withTransaction(async (client) => {
       const created = await onboardingRepo.createInvitation(
@@ -32,14 +34,19 @@ export const invitationsService = {
         aggregate: 'invitation',
         aggregateId: created.id,
         eventType: 'email.invite',
-        payload: { tenantId: input.tenantId, email: input.email, token: created.token },
+        payload: {
+          tenantId: input.tenantId,
+          email: input.email,
+          token: created.token,
+          firstName: input.firstName ?? null,
+        },
         idempotencyKey: `email.invite:${created.id}`,
       });
       return created;
     });
     // Outside the transaction — an external HTTP call has no business
     // holding a DB connection open.
-    await sendInviteEmailNow(inv.id, inv.token);
+    await sendInviteEmailNow(inv.id, inv.token, { firstName: input.firstName });
     return { invitationId: inv.id };
   },
 };

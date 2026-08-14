@@ -45,12 +45,17 @@ export const clientsController = {
   async inviteUser(req: Request, res: Response): Promise<void> {
     if (!req.auth) throw new UnauthorizedError();
     const tenantId = req.params.id!;
-    const { email, role } = req.body as { email: string; role: string };
+    const { email, role, first_name: firstName } = req.body as {
+      email: string;
+      role: string;
+      first_name?: string;
+    };
     const result = await invitationsService.invite({
       tenantId,
       email,
       role,
       invitedBy: req.auth.user.id,
+      firstName,
     });
     res.status(StatusCodes.CREATED).json(ok({ ...result, email, role }));
   },

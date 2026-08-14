@@ -22,7 +22,9 @@ export const handlers: Record<string, OutboxHandler> = {
   },
 
   'email.invite': async (row) => {
-    await sendInviteEmail(String(row.payload.token));
+    const firstName =
+      typeof row.payload.firstName === 'string' ? row.payload.firstName : undefined;
+    await sendInviteEmail(String(row.payload.token), { firstName });
   },
 
   'n8n.trigger_sync': async (row) => {

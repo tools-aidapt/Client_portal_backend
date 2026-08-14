@@ -290,10 +290,17 @@ Sync flow chosen: **ClickUp → n8n (cloud, hourly) → `POST /internal/sync/all
 The HMAC `/webhooks/clickup` route exists but is **unused** in this model.
 Requires the backend to be publicly reachable (cloud n8n can't reach localhost).
 
-- `email.invite` — **LIVE**: posts to `N8N_INVITE_WEBHOOK_URL` with the recipient,
-  org, role, and registration link (`PORTAL_BASE_URL/register?token=…`); n8n sends
-  the email. Registration is invitation-gated (`POST /auth/register` needs the token;
-  email/org/role come from the invite). Admin invites via `POST /admin/clients/:id/invitations`.
+- `email.invite` — **LIVE**: posts to `N8N_INVITE_WEBHOOK_URL` with the Partner
+  Portal welcome copy (subject `Your Aidapt Partner Portal login`, preheader,
+  html, text) plus the merge fields (`first_name`, `portal_url`, `login_email`,
+  `track_name`, `company_name`, `support_email`, `aidapt_lead_*`, …). The copy
+  lives in `invite-email.template.ts` so a rewrite does not require editing the
+  n8n workflow — the email node must send `$json.subject` / `$json.html` (not a
+  hardcoded body). `portal_url` is still `PORTAL_BASE_URL/register?token=…`.
+  Registration is invitation-gated (`POST /auth/register` needs the token;
+  email/org/role come from the invite). Admin invites via
+  `POST /admin/clients/:id/invitations`. Optional `first_name` on the invite
+  body fills "Hi …,"; otherwise it is guessed from the email.
 
 STUBBED (log-only, need real integration):
 - `clickup.provision_folder` outbox handler.
