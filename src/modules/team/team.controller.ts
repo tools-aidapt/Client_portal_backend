@@ -4,6 +4,7 @@ import { AppError, NotFoundError, UnauthorizedError } from '@common/errors/index
 import { ok } from '@common/utils/api-response.js';
 import { membersRepo } from '@modules/admin/clients/repositories/members.repository.js';
 import { invitationsRepo } from '@modules/admin/clients/repositories/invitations.repository.js';
+import { sendInviteEmailNow } from '@modules/invitations/invite-email.js';
 
 export const teamController = {
   /**
@@ -96,5 +97,41 @@ export const teamController = {
       409,
       'INVITATION_NOT_PENDING',
     );
+  },
+
+  /**
+   * Re-send an invitation this org sent. Same 404-vs-409 shape as revoke,
+   * plus 429 for the resend cooldown — see `invitationsRepo.resend` for why
+   * the same token gets reused instead of minting a new one.
+   */
+  async resendInvitation(req: Request, res: Response): Promise<void> {
+    if (!req.tenant) throw new UnauthorizedError();
+    const tenantId = req.tenant.id;
+    const id = req.params.invitationId!;
+
+    const result = await invitationsRepo.resend(tenantId, id);
+
+    if (!result.ok) {
+      if (result.reason === 'not_found') throw new NotFoundError('Invitation not found');
+      if (result.reason === 'cooldown') {
+        res.setHeader('Retry-After', String(result.retryAfterSeconds));
+        throw new AppError(
+          'A reminder was already sent recently — try again later',
+          429,
+          'INVITATION_RESEND_COOLDOWN',
+        );
+      }
+      if (result.status === 'accepted') {
+        throw new AppError(
+          'That invitation has already been accepted — there is nothing to resend',
+          409,
+          'INVITATION_ALREADY_ACCEPTED',
+        );
+      }
+      throw new AppError(`That invitation is already ${result.status}`, 409, 'INVITATION_NOT_PENDING');
+    }
+
+    await sendInviteEmailNow(id, result.token);
+    res.status(StatusCodes.OK).json(ok({ resent: true }));
   },
 };

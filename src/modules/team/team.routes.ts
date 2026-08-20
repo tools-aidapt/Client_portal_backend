@@ -36,6 +36,11 @@ teamRoutes.post(
   validate({ params: z.object({ invitationId: z.string().uuid() }) }),
   asyncHandler(teamController.revokeInvitation),
 );
+teamRoutes.post(
+  '/invitations/:invitationId/resend',
+  validate({ params: z.object({ invitationId: z.string().uuid() }) }),
+  asyncHandler(teamController.resendInvitation),
+);
 
 // 'portal' is accepted but always implied — setAppAccess never revokes it.
 teamRoutes.patch(

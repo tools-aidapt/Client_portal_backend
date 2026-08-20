@@ -72,6 +72,16 @@ adminClientsRoutes.post(
   asyncHandler(clientsController.revokeInvitation),
 );
 
+// Re-sends the invitation email — same token, extended expiry, rate-limited
+// so an admin can't spam a real inbox by clicking it repeatedly.
+adminClientsRoutes.post(
+  '/:id/invitations/:invitationId/resend',
+  validate({
+    params: tenantIdParam.extend({ invitationId: z.string().uuid() }),
+  }),
+  asyncHandler(clientsController.resendInvitation),
+);
+
 // --- Members (who already has access to this client's Portal) ---
 // `/:id/invitations` adds a person, these two show and adjust the people who
 // already accepted.

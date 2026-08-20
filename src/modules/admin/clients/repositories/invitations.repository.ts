@@ -1,4 +1,6 @@
-import { pool } from '@infra/db/pool.js';
+import { pool, withTransaction } from '@infra/db/pool.js';
+
+const RESEND_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Reading and revoking invitations.
@@ -136,5 +138,67 @@ export const invitationsRepo = {
       [invitationId, tenantId],
     );
     return rows[0]?.status ?? null;
+  },
+
+  /**
+   * Re-send an invitation's email. Reuses the same token rather than minting
+   * a new one — the token itself never went bad, only `expires_at` did (or,
+   * for a row someone already tried and failed to redeem, `status` got
+   * lazily flipped to 'expired' too). Either way, resetting both back to a
+   * fresh 14-day window makes the existing token valid again, so there is
+   * nothing for `registerViaInvitation` or `sendInviteEmail` to reject.
+   *
+   * `for update` + a single transaction so two admins double-clicking Resend
+   * at the same moment can't both slip past the cooldown check.
+   *
+   * Returns a discriminated result rather than throwing, so the controller
+   * can pick the right HTTP status without a second query.
+   */
+  async resend(
+    tenantId: string,
+    invitationId: string,
+  ): Promise<
+    | { ok: true; token: string }
+    | { ok: false; reason: 'not_found' }
+    | { ok: false; reason: 'not_pending'; status: string }
+    | { ok: false; reason: 'cooldown'; retryAfterSeconds: number }
+  > {
+    return withTransaction(async (client) => {
+      const { rows } = await client.query<{
+        status: string;
+        last_reminded_at: string | null;
+        created_at: string;
+      }>(
+        `select status::text as status, last_reminded_at, created_at
+           from core.invitations
+          where id = $1 and tenant_id = $2
+          for update`,
+        [invitationId, tenantId],
+      );
+      const inv = rows[0];
+      if (!inv) return { ok: false, reason: 'not_found' };
+      if (inv.status !== 'pending' && inv.status !== 'expired') {
+        return { ok: false, reason: 'not_pending', status: inv.status };
+      }
+
+      const lastSentAt = inv.last_reminded_at ?? inv.created_at;
+      const elapsedMs = Date.now() - new Date(lastSentAt).getTime();
+      if (elapsedMs < RESEND_COOLDOWN_MS) {
+        return {
+          ok: false,
+          reason: 'cooldown',
+          retryAfterSeconds: Math.ceil((RESEND_COOLDOWN_MS - elapsedMs) / 1000),
+        };
+      }
+
+      const { rows: updated } = await client.query<{ token: string }>(
+        `update core.invitations
+            set status = 'pending', expires_at = now() + interval '14 days', last_reminded_at = now()
+          where id = $1
+          returning token`,
+        [invitationId],
+      );
+      return { ok: true, token: updated[0]!.token };
+    });
   },
 };
