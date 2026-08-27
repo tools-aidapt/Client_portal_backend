@@ -11,7 +11,7 @@ export const INVITE_EMAIL_SUBJECT = 'Your Aidapt Partner Portal login';
 export const INVITE_EMAIL_PREHEADER =
   'Set your password, see what you have access to, clear Level 1.';
 
-/** Third product in the suite (Support Desk and LMS are named in the copy). */
+/** Third product in the suite (Support Desk and Academy are named in the copy). */
 export const DEFAULT_APP_3_NAME = 'Partner Portal';
 export const DEFAULT_APP_3_LINE =
   'Your projects, sprints, monthly reports, and the work itself.';
@@ -77,12 +77,12 @@ export function renderInviteEmail(vars: InviteEmailVars): RenderedInviteEmail {
     '',
     'Support Desk. Something broken, something confusing, something you want changed. Raise it here and watch it move. No chasing, no wondering who has it.',
     '',
-    `LMS. Your track is ${vars.trackName}, starting at Level 1. Levels move as you finish modules and apply them to real work, not quizzes. Your team sees your progress and you see theirs. That is on purpose.`,
+    `Academy. Your track is ${vars.trackName}, starting at Level 1. Levels move as you finish modules and apply them to real work, not quizzes. Your team sees your progress and you see theirs. That is on purpose.`,
     '',
     `${vars.app3Name}. ${vars.app3Line}`,
     '',
     'Start here',
-    'Set your password. Open the LMS. Finish Module 1.',
+    'Set your password. Open the Academy. Finish Module 1.',
     '',
     accessLine,
     '',
@@ -131,10 +131,10 @@ function renderHtml(vars: InviteEmailVars, accessLine: string, signOffTitle: str
     Set your password and you are in.</p>
   <p><strong>What you have been given access to</strong></p>
   <p>Support Desk. Something broken, something confusing, something you want changed. Raise it here and watch it move. No chasing, no wondering who has it.</p>
-  <p>LMS. Your track is ${trackName}, starting at Level 1. Levels move as you finish modules and apply them to real work, not quizzes. Your team sees your progress and you see theirs. That is on purpose.</p>
+  <p>Academy. Your track is ${trackName}, starting at Level 1. Levels move as you finish modules and apply them to real work, not quizzes. Your team sees your progress and you see theirs. That is on purpose.</p>
   <p>${app3Name}. ${app3Line}</p>
   <p><strong>Start here</strong><br>
-    Set your password. Open the LMS. Finish Module 1.</p>
+    Set your password. Open the Academy. Finish Module 1.</p>
   <p>${access}</p>
   <p>Stuck on anything, reply here or write to <a href="mailto:${supportEmail}">${supportEmail}</a>. A person answers.</p>
   <p>Welcome in.</p>

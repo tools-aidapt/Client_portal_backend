@@ -67,11 +67,11 @@ describe('renderInviteEmail', () => {
       'Support Desk. Something broken, something confusing, something you want changed. Raise it here and watch it move. No chasing, no wondering who has it.',
     );
     expect(text).toContain(
-      'LMS. Your track is Kenafric, starting at Level 1. Levels move as you finish modules and apply them to real work, not quizzes. Your team sees your progress and you see theirs. That is on purpose.',
+      'Academy. Your track is Kenafric, starting at Level 1. Levels move as you finish modules and apply them to real work, not quizzes. Your team sees your progress and you see theirs. That is on purpose.',
     );
     expect(text).toContain(`Partner Portal. ${DEFAULT_APP_3_LINE}`);
     expect(text).toContain('Start here');
-    expect(text).toContain('Set your password. Open the LMS. Finish Module 1.');
+    expect(text).toContain('Set your password. Open the Academy. Finish Module 1.');
     expect(text).toContain(
       'Your access runs for as long as Aidapt and Kenafric are working together.',
     );
