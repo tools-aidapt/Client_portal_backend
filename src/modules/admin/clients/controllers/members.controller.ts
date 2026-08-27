@@ -1,7 +1,8 @@
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
-import { NotFoundError } from '@common/errors/index.js';
+import { AppError, NotFoundError } from '@common/errors/index.js';
 import { ok } from '@common/utils/api-response.js';
+import { adminTenantsRepo } from '@modules/admin/tenants/repositories/tenants.repository.js';
 import { membersRepo } from '../repositories/members.repository.js';
 import { syncUserToLms, syncUserToSupportDesk } from '@modules/auth/cross-app.js';
 import type { UpdateMemberBody } from '../validators/clients.validators.js';
@@ -24,7 +25,33 @@ export const membersController = {
 
   async update(req: Request, res: Response): Promise<void> {
     const body = req.body as UpdateMemberBody;
-    const member = await membersRepo.update(req.params.id!, req.params.userId!, body);
+    const tenantId = req.params.id!;
+    const userId = req.params.userId!;
+
+    // Platform-wide staff access belongs to Aidapt's own people, so it can only
+    // be granted from inside Aidapt's client group. Checked against
+    // `core.tenants.is_protected` rather than the request, so no client screen
+    // — and no hand-rolled PATCH at a client's tenant id — can mint one.
+    if (body.role === 'super_admin' && !(await adminTenantsRepo.isInternal(tenantId))) {
+      throw new AppError(
+        'Super admin is Aidapt staff access — it can only be given to a member of the Aidapt client group',
+        400,
+        'SUPER_ADMIN_TENANT_ONLY',
+      );
+    }
+
+    // Nobody demotes themselves: the same PATCH clears `is_platform_admin`, so
+    // the click that removed the role would also remove the access needed to
+    // put it back, from this screen and every other admin one.
+    if (body.role && body.role !== 'super_admin' && userId === req.auth?.user.id) {
+      throw new AppError(
+        'You cannot change your own role — ask another Aidapt admin to do it',
+        400,
+        'CANNOT_CHANGE_OWN_ROLE',
+      );
+    }
+
+    const member = await membersRepo.update(tenantId, userId, body);
     if (!member) throw new NotFoundError('That person is not a member of this client');
 
     // Push the new role to the sibling apps. Registration was previously the

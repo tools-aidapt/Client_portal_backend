@@ -1,5 +1,9 @@
 import { pool, withTransaction } from '@infra/db/pool.js';
-import type { MembershipStatus, TenantRole } from '../validators/clients.validators.js';
+import type {
+  AssignableRole,
+  MembershipStatus,
+  TenantRole,
+} from '../validators/clients.validators.js';
 
 export interface TenantMember {
   user_id: string;
@@ -80,23 +84,57 @@ export const membersRepo = {
   async update(
     tenantId: string,
     userId: string,
-    fields: { role?: TenantRole; status?: MembershipStatus },
+    fields: { role?: AssignableRole; status?: MembershipStatus },
   ): Promise<TenantMember | null> {
-    const { rows } = await pool.query<TenantMember>(
-      `with updated as (
-         update core.memberships
-            set role = coalesce($3::core.user_role, role),
-                status = coalesce($4::core.membership_status, status)
-          where tenant_id = $1 and user_id = $2
-          returning user_id, role, status, joined_at
-       )
-       select ${MEMBER_COLUMNS}
-         from updated m
-         join core.profiles p on p.id = m.user_id
-         left join core.user_credentials c on c.user_id = m.user_id`,
-      [tenantId, userId, fields.role ?? null, fields.status ?? null],
-    );
-    return rows[0] ?? null;
+    return withTransaction(async (client) => {
+      // Read before writing: the flag update below has to know what the role
+      // WAS, not just what it became.
+      const before = await client.query<{ role: string }>(
+        `select role::text as role from core.memberships
+          where tenant_id = $1 and user_id = $2 for update`,
+        [tenantId, userId],
+      );
+      const previousRole = before.rows[0]?.role ?? null;
+
+      const { rows } = await client.query<TenantMember>(
+        `with updated as (
+           update core.memberships
+              set role = coalesce($3::core.user_role, role),
+                  status = coalesce($4::core.membership_status, status)
+            where tenant_id = $1 and user_id = $2
+            returning user_id, role, status, joined_at
+         )
+         select ${MEMBER_COLUMNS}
+           from updated m
+           join core.profiles p on p.id = m.user_id
+           left join core.user_credentials c on c.user_id = m.user_id`,
+        [tenantId, userId, fields.role ?? null, fields.status ?? null],
+      );
+      const member = rows[0] ?? null;
+      if (!member || !fields.role || fields.role === previousRole) return member;
+
+      // `super_admin` and `profiles.is_platform_admin` are two halves of one
+      // fact and must move together: `requirePlatformAdmin` reads the flag, not
+      // the role, so a promotion that only wrote the role would show the badge
+      // while every admin screen still said no, and a demotion would leave
+      // platform access behind entirely. Registration set the flag from a
+      // `super_admin` invitation and nothing kept them in step afterwards.
+      //
+      // Deliberately narrow: only a transition INTO or OUT OF `super_admin`
+      // touches the flag. Aidapt staff predating this hold `admin` plus the
+      // flag directly, and a member↔admin change — including re-picking the
+      // role a person already has — must not quietly revoke that.
+      if (fields.role === 'super_admin') {
+        await client.query(`update core.profiles set is_platform_admin = true where id = $1`, [
+          userId,
+        ]);
+      } else if (previousRole === 'super_admin') {
+        await client.query(`update core.profiles set is_platform_admin = false where id = $1`, [
+          userId,
+        ]);
+      }
+      return member;
+    });
   },
 
   /**

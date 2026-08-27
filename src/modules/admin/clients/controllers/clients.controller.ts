@@ -3,6 +3,7 @@ import { StatusCodes } from 'http-status-codes';
 import { AppError, NotFoundError, UnauthorizedError } from '@common/errors/index.js';
 import { ok } from '@common/utils/api-response.js';
 import { invitationsService } from '@modules/invitations/invitations.service.js';
+import { adminTenantsRepo } from '@modules/admin/tenants/repositories/tenants.repository.js';
 import { onboardingService } from '../services/onboarding.service.js';
 import { onboardingRepo } from '../repositories/onboarding.repository.js';
 import { invitationsRepo } from '../repositories/invitations.repository.js';
@@ -42,7 +43,11 @@ export const clientsController = {
 
   /**
    * Platform admin invites a user to a tenant and queues the email. Unlike the
-   * org-admin invite, this may grant any role including super_admin.
+   * org-admin invite, this may grant `super_admin` — but only into Aidapt's own
+   * client group, the same rule `membersController.update` enforces. Without
+   * that check here, gating the members screen would be theatre: inviting
+   * someone as super_admin into a customer's tenant reaches the same place,
+   * and registration would set `is_platform_admin` on the way in.
    */
   async inviteUser(req: Request, res: Response): Promise<void> {
     if (!req.auth) throw new UnauthorizedError();
@@ -52,6 +57,13 @@ export const clientsController = {
       role: string;
       first_name?: string;
     };
+    if (role === 'super_admin' && !(await adminTenantsRepo.isInternal(tenantId))) {
+      throw new AppError(
+        'Super admin is Aidapt staff access — it can only be given to a member of the Aidapt client group',
+        400,
+        'SUPER_ADMIN_TENANT_ONLY',
+      );
+    }
     const result = await invitationsService.invite({
       tenantId,
       email,
