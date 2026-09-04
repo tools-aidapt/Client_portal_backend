@@ -285,30 +285,37 @@ export const portalRepo = {
   },
 
   /**
-   * LMS tile, computed live from the LMS team's schema. Their data keys to a
-   * client group, so the Portal tenant has to be bridged onto one. TWO bridges
-   * are unioned, because either alone leaves real clients showing "Academy not
-   * connected yet" when they demonstrably have an LMS presence:
+   * LMS ("Academy") tile, computed live from the LMS team's schema.
    *
-   *   1. `core.external_tenant_links` (migration `0035`) — the explicit
-   *      crosswalk, tenant -> LMS_client_groups.id. Authoritative when set.
-   *   2. `core.tenant_email_domains.domain` -> `LMS_client_domains` — the
-   *      original domain bridge, kept because not every tenant is in the
-   *      crosswalk yet.
+   * Used to bridge the Portal's tenant id onto an LMS client_group_id via a
+   * crosswalk (`core.external_tenant_links`) or an email-domain join, because
+   * the two were different id spaces. They are not any more: the LMS team's
+   * core-schema migration (their Phase 4) repointed every LMS client-group
+   * reference at `core.tenants` directly, so a Portal tenant id IS the LMS
+   * client_group_id now — no bridge needed.
    *
-   * The crosswalk had to be added here: `core.tenant_email_domains` is EMPTY
-   * for Kenafric, Aidapt, HBL and Pam Golding (verified 2026-08-13), so the
-   * domain join returned nothing and the tile read "not connected" for
-   * Kenafric even though LMS holds a fully populated `Kenafric` client group
-   * (`534e9814-…`) — which `external_tenant_links` was already pointing at.
-   * Fixing it by inserting the missing domains would work too, but it would
-   * make a live tile depend on someone remembering to record a domain; the
-   * crosswalk is the fact that actually means "this tenant is that LMS group".
+   * That same migration (Phase 6) retired `lms."LMS_users"` and
+   * `lms."LMS_client_domains"` outright, which is what broke this tile: it was
+   * still querying both by name, got a 42P01 on every call, and the guard
+   * below (written for "if LMS renames these tables") silently turned that
+   * into "Academy not connected yet" for every tenant, not just ones with no
+   * real LMS presence. "Active learner" is now resolved the same way the LMS
+   * itself resolves one post-migration — an active `core.memberships` row for
+   * this tenant, joined to an active `core.app_access` grant for 'lms' — since
+   * there is no local LMS_users.active column left to read.
    *
-   * Returns null if the tenant maps to no LMS client group (no LMS presence).
+   * `LMS_group_course_entitlements` / `LMS_user_course_completion` /
+   * `LMS_user_course_assignments` were not retired, only repointed: their
+   * `user_id`/`client_group_id` columns hold core ids directly now, so they
+   * join straight onto `core.memberships` instead of through `LMS_users`.
    *
-   * Wrapped in a 42P01 guard: if the LMS team renames/drops these tables the
-   * tile degrades to null rather than breaking the dashboard.
+   * Returns null if the tenant has no LMS presence at all (no active learner
+   * and no course entitlement) — genuinely means "not connected", not a
+   * missing bridge.
+   *
+   * Still wrapped in a 42P01 guard: if the LMS team renames or drops one of
+   * the three tables still queried here, the tile degrades to null again
+   * rather than breaking the dashboard.
    */
   async enablementSummary(tenantId: string): Promise<Record<string, unknown> | null> {
     try {
@@ -316,36 +323,33 @@ export const portalRepo = {
         active_learners: number;
         courses_assigned: number;
         avg_completion_pct: string;
-        group_count: number;
+        has_presence: boolean;
       }>(
-        `with groups as (
-           select l.source_id as gid
-             from core.external_tenant_links l
-            where l.tenant_id = $1 and l.source_system = 'lms'
-           union
-           select distinct d.client_group_id as gid
-             from core.tenant_email_domains ted
-             join lms."LMS_client_domains" d on lower(d.domain) = lower(ted.domain)
-            where ted.tenant_id = $1
-         )
-         select
-           (select count(*)::int from lms."LMS_users" u
-             where u.client_group_id in (select gid from groups) and u.active) as active_learners,
-           (select count(distinct e.course_id)::int from lms."LMS_group_course_entitlements" e
-             where e.client_group_id in (select gid from groups)) as courses_assigned,
+        `select
+           (select count(*)::int
+              from core.memberships m
+              join core.profiles p on p.id = m.user_id
+              join core.app_access aa on aa.user_id = m.user_id and aa.app = 'lms' and aa.status = 'active'
+             where m.tenant_id = $1 and m.status = 'active' and p.is_active) as active_learners,
+           (select count(distinct course_id)::int from lms."LMS_group_course_entitlements"
+             where client_group_id = $1) as courses_assigned,
            coalesce(round(100.0 *
              (select count(*) from lms."LMS_user_course_completion" cc
-                join lms."LMS_users" u on u.id = cc.user_id
-               where u.client_group_id in (select gid from groups))
+                join core.memberships m on m.user_id = cc.user_id and m.tenant_id = $1 and m.status = 'active')
              / nullif((select count(*) from lms."LMS_user_course_assignments" a
-                join lms."LMS_users" u on u.id = a.user_id
-               where u.client_group_id in (select gid from groups)), 0), 2), 0) as avg_completion_pct,
-           (select count(*)::int from groups) as group_count
+                join core.memberships m on m.user_id = a.user_id and m.tenant_id = $1 and m.status = 'active'), 0), 2), 0) as avg_completion_pct,
+           exists(
+             select 1 from core.memberships m
+              join core.app_access aa on aa.user_id = m.user_id and aa.app = 'lms' and aa.status = 'active'
+             where m.tenant_id = $1 and m.status = 'active'
+             union
+             select 1 from lms."LMS_group_course_entitlements" where client_group_id = $1
+           ) as has_presence
         `,
         [tenantId],
       );
       const r = rows[0];
-      if (!r || r.group_count === 0) return null;
+      if (!r || !r.has_presence) return null;
       return {
         active_learners: r.active_learners,
         courses_assigned: r.courses_assigned,
