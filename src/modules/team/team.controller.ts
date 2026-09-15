@@ -38,12 +38,50 @@ export const teamController = {
   async setApps(req: Request, res: Response): Promise<void> {
     if (!req.tenant || !req.auth) throw new UnauthorizedError();
     const { apps } = req.body as { apps: string[] };
-    const member = await membersRepo.setAppAccess(
-      req.tenant.id,
-      req.params.userId!,
-      apps,
-      req.auth.user.id,
-    );
+    const tenantId = req.tenant.id;
+    const userId = req.params.userId!;
+    const actorId = req.auth.user.id;
+
+    // Revoking Portal access is the one app change that locks a colleague out
+    // rather than narrowing what they can reach, so it carries two guards the
+    // other two apps do not need. Both are checked before the write, and only
+    // when Portal is actually being taken away — granting apps never trips
+    // either, and neither does a call that leaves Portal alone.
+    if (!apps.includes('portal')) {
+      const target = await membersRepo.byId(tenantId, userId);
+      // Already without it: re-sending the same set must stay idempotent, or a
+      // second save of an unchanged form would start failing.
+      if (target?.apps.includes('portal')) {
+        // Self-lockout. The click that removed the access would remove the
+        // screen needed to put it back, and an org admin has no Aidapt
+        // equivalent to fall back on — they would have to raise a ticket to
+        // undo their own click.
+        if (userId === actorId) {
+          throw new AppError(
+            'You cannot revoke your own Portal access — ask a colleague, or Aidapt, to do it',
+            400,
+            'CANNOT_REVOKE_OWN_PORTAL_ACCESS',
+          );
+        }
+
+        // Last admin standing. Not a self-lockout but an org-lockout: nobody
+        // left at the client could invite, restore or administer anything.
+        // Aidapt can still fix it, which is precisely why this is a 409
+        // pointing at them rather than a flat refusal.
+        if (
+          (target.role === 'admin' || target.role === 'super_admin') &&
+          (await membersRepo.otherActivePortalAdmins(tenantId, userId)) === 0
+        ) {
+          throw new AppError(
+            'That is the only admin who can still open the Portal — give someone else admin access first, or ask Aidapt',
+            409,
+            'LAST_PORTAL_ADMIN',
+          );
+        }
+      }
+    }
+
+    const member = await membersRepo.setAppAccess(tenantId, userId, apps, actorId);
     if (!member) throw new NotFoundError('That person is not a member of your organisation');
     res.status(StatusCodes.OK).json(ok(member));
   },

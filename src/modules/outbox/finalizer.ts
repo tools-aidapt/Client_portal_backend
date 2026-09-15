@@ -17,8 +17,27 @@ export async function finalizeOnboarding(onboardingId: string): Promise<void> {
   const tenantId = rows[0]?.tenant_id;
   if (!tenantId) return; // already finalized or unknown
 
+  // A client can be suspended while its onboarding is still running, and this
+  // used to be a plain `status = 'active' where status = 'onboarding'`: on a
+  // suspended tenant the WHERE simply missed, so the suspension survived but
+  // the tenant was left remembering 'onboarding' as the status to restore —
+  // and resuming would have silently rewound a finished onboarding. So the
+  // completion is recorded where it will actually be read: on the live status
+  // when the tenant is running, and on the status queued for restore when it
+  // is suspended. Both arms of the CASE read the value from BEFORE this
+  // update, which is what makes the pair coherent.
   await pool.query(
-    `update core.tenants set status = 'active' where id = $1 and status = 'onboarding'`,
+    `update core.tenants
+        set status = case when status = 'suspended'
+                          then 'suspended'::core.tenant_status
+                          else 'active'::core.tenant_status end,
+            status_before_suspension = case when status = 'suspended'
+                          then 'active'::core.tenant_status
+                          else status_before_suspension end,
+            updated_at = now()
+      where id = $1
+        and (status = 'onboarding'
+             or (status = 'suspended' and status_before_suspension = 'onboarding'))`,
     [tenantId],
   );
   await pool.query(

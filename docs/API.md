@@ -74,10 +74,10 @@ Each endpoint below notes the minimum role.
 | Method | Path | Role | Body / Notes |
 |---|---|---|---|
 | POST | `/auth/register` | public (invite-gated) | `{ token, password (≥8), fullName }` — the invite token; email/org/role come from it. Returns the token pair **plus `email`**, which the caller never had: the address lives on the invitation, not in anything the person typed, and the client needs it to open a session (`/auth/me` doesn't return it). Distinct failures worth surfacing verbatim: `404` invitation not found, `403` revoked, `400` expired / already used, `409` an account with that email already exists (sign in and accept instead) |
-| POST | `/auth/login` | public | `{ email, password }` → token pair |
+| POST | `/auth/login` | public | `{ email, password }` → token pair. Two `403`s are **not** bad credentials and re-entering them will not help, so surface the message rather than the generic failure: `PORTAL_ACCESS_REVOKED` (this person's `core.app_access` grant for `portal` was removed) and `TENANT_SUSPENDED` (their whole client is switched off). Both also apply to `/auth/otp/verify` and `/auth/refresh`. Platform admins are exempt from both |
 | POST | `/auth/otp/request` | public | `{ email }` → `{ sent: true }` (emails a 6-digit code if the account exists) |
 | POST | `/auth/otp/verify` | public | `{ email, code }` → token pair |
-| POST | `/auth/refresh` | public | `{ refreshToken }` → rotated token pair |
+| POST | `/auth/refresh` | public | `{ refreshToken }` → rotated token pair. Carries the same two `403`s as `/auth/login`, which is what stops a session that was live at the moment of revocation from renewing itself indefinitely. The presented token is revoked before the check, so a refusal here ends the session |
 | POST | `/auth/logout` | public | `{ refreshToken }` |
 | POST | `/auth/logout-all` | any signed-in | revoke all refresh tokens |
 | GET | `/auth/me` | any signed-in | `{ id, full_name, job_title, department, phone, interests, avatar_url, is_platform_admin, memberships[], apps[] }` |
@@ -99,6 +99,20 @@ Each endpoint below notes the minimum role.
 | GET | `/usecases/:slug` | member_plus | One study with its full narrative, for the expanded card: the list fields plus `{ business_function, integration_type, problem, solution, impact, connects_to[], body_md }`. **Three client-facing sections**, parsed from the ClickUp description across its three heading conventions — `PROBLEM`/`Problem:`/`Problem` → `problem`, `WHAT GETS BUILT`/`Solution`/`Purpose` → `solution`, `DEFINITION OF DONE`/`Success Criteria` → `impact`. Any can be null (Sigma workbook studies rarely state a problem). `connects_to` is stored and searchable but **not** one of the shown headings. `body_md` is the raw body, non-null only when no known heading matched — render it verbatim as a fallback. Unpublished studies are **not addressable** — an unknown or withheld slug returns `404` |
 | GET | `/notifications` | member | `{ items[], unread }` |
 | POST | `/notifications/:id/read` | member | marks read |
+
+## Team (a client managing its OWN people, `admin`)
+Tenant is resolved from the caller's own membership, never from the path, so an
+org admin can only ever reach their own colleagues. Role and status changes are
+deliberately absent — those stay with Aidapt (`/admin/clients/:id/members`), so
+a client admin cannot promote or suspend a colleague.
+
+| Method | Path | Body / Notes |
+|---|---|---|
+| GET | `/team` | `{ members[] }` — the caller's own org, same row shape as `/admin/clients/:id/members`. Suspended memberships are hidden here (they are visible to Aidapt, who restore them) |
+| GET | `/team/invitations` | `{ invitations[] }` — what this org has sent and what became of each. Read **`effective_status`**, not `status`: the column only advances to `expired` lazily, so a dead invitation still reads `pending` raw |
+| POST | `/team/invitations/:id/revoke` | no body. POST not DELETE — the row is kept with `status = 'revoked'`, which is exactly what registration reads to refuse the token. `409` if already accepted/revoked, `404` if it belongs to another tenant |
+| POST | `/team/invitations/:id/resend` | no body. Same token, extended expiry. `429` + `Retry-After` while the cooldown is running |
+| PATCH | `/team/:userId/apps` | `{ apps: ('portal'\|'lms'\|'support_desk')[] }` — the **exact** set, anything omitted is revoked. Omitting `portal` now genuinely locks that colleague out (it is read by every sign-in path and by `requireTenantRole`); it used to be silently re-added on every call. Two refusals, both only when Portal is actually being taken from someone who has it, so re-saving an unchanged set stays idempotent: `400 CANNOT_REVOKE_OWN_PORTAL_ACCESS` (the click would remove the screen needed to undo it) and `409 LAST_PORTAL_ADMIN` (nobody at the client would be left able to administer it — Aidapt's equivalent endpoint has no such guard and can still do it) |
 
 ## Wishlist
 | Method | Path | Role | Body |
@@ -185,11 +199,24 @@ Sync: `POST /internal/sync/reports` with `{}`.
 | PUT | `/admin/clients/:id/clickup-mapping` | `{ clickup_folder_id?, clickup_client_group? }` |
 | GET | `/admin/clients/:id/members` | `{ members[] }` — everyone who already belongs to this client: `user_id`, `full_name`, `email`, `role`, `status`, `joined_at`. `email` is **null** for anyone with no `core.user_credentials` row (an account made by direct SQL, not by registering), so the join is a LEFT one and they still appear. Distinct from invitations: a pending invite is NOT a member until the person registers |
 | PATCH | `/admin/clients/:id/members/:userId` | `{ role?, status? }` — change one member's standing in this client. `role` is tenant-scoped only (`member` / `member_plus` / `member_pro` / `org_admin`); **`super_admin` is rejected by name** (422) because platform-wide access isn't something a per-client screen grants — use `/invitations` for that. `status` is `invited` / `active` / `suspended`; suspending is how access is revoked, so the membership history survives. An omitted field is left untouched, not nulled. `404` when that user has no membership *in this tenant*, which is also what blocks editing another client's member by guessing an id |
+| PATCH | `/admin/clients/:id/members/:userId/apps` | `{ apps: ('portal'\|'lms'\|'support_desk')[] }` — the **exact** set this person may open; anything omitted is revoked. Omitting `portal` genuinely revokes sign-in (it is read by `/auth/login`, `/auth/otp/verify`, `/auth/refresh` and `requireTenantRole`), which it did not before. `400 CANNOT_REVOKE_OWN_PORTAL_ACCESS` if you aim it at yourself. There is deliberately **no** last-admin guard here — taking Portal off a client's final admin is a legitimate Aidapt action, and the client-side endpoint points people here to do it |
 | GET | `/admin/clients/:id/projects` | discovered projects + visibility |
 | POST | `/admin/clients/:id/projects/discover` | pull projects from ClickUp |
 | PATCH | `/admin/clients/:id/projects/:listId` | `{ is_visible }` |
 | GET | `/admin/clients/:id/wishlist-items` | `{ items[] }` — the client's wishlist items (`id`, `title`, `state`, `created_at`) each with `linked_clickup_task_id` / `linked_task_name`, so you can see which prioritised items still need a Process List task attached |
 | PATCH | `/admin/clients/:id/tasks/:taskId/wishlist-source` | `{ wishlist_item_id: uuid \| null }` — state that a cached task came out of a wishlist item (surfaces on `GET /onboarding` as `source_wishlist_title`); `null` unlinks. `:taskId` is the **ClickUp** task id, not the internal uuid. `404` if the task isn't cached for this client, or if the wishlist item isn't this client's — the link is always within one tenant. Deliberately manual: nothing can match a ClickUp task to a wishlist item automatically |
+
+## Admin — enabling and disabling a client (super_admin)
+| Method | Path | Body |
+|---|---|---|
+| GET | `/admin/tenants` | `{ tenants[] }` — the picker list: `id`, `name`, `slug`, `status`, `is_protected`, plus `suspended_at` / `suspended_by_name` / `suspension_reason` (all null unless suspended) |
+| POST | `/admin/tenants/:id/suspend` | `{ reason? }` (≤500 chars, **internal** — never shown to the client) → `{ tenant, sessions_revoked }`. Switches the whole client off: `status` becomes `suspended`, the status it replaced is remembered for resume, and every active member's Portal refresh token is revoked so live sessions die at the next request. Platform admins' sessions are spared. `409 TENANT_PROTECTED` on Aidapt's own group (suspending it would lock out the staff who would undo it), `409 TENANT_ALREADY_SUSPENDED`, `404` unknown id |
+| POST | `/admin/tenants/:id/resume` | no body → `{ tenant }`. Restores the lifecycle status held before suspension — a client suspended mid-onboarding comes back as `onboarding`, not `active`. Sessions are **not** restored; everyone signs in again. `409 TENANT_NOT_SUSPENDED`, `404` unknown id |
+
+While a client is suspended, its members are refused at sign-in **and** on every
+tenant-scoped route (`403 TENANT_SUSPENDED` from `requireTenantRole`), and a
+pending invitation into it cannot be redeemed — the invitation stays `pending`
+and works again on resume, which is the difference between this and offboarding.
 
 ## Admin — voting cycles (super_admin, tenant-scoped)
 | Method | Path | Body |

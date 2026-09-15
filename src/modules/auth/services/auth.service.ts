@@ -1,6 +1,6 @@
 import { config } from '@config/index.js';
 import { logger } from '@infra/logger/index.js';
-import { UnauthorizedError } from '@common/errors/index.js';
+import { AppError, UnauthorizedError } from '@common/errors/index.js';
 import { authRepo, type MeView, type ProfileFields } from '../repositories/auth.repository.js';
 import { hashPassword, verifyPassword } from '../utils/password.js';
 import { generateOtpCode, hashOtpCode, verifyOtpCode } from '../utils/otp.js';
@@ -31,6 +31,55 @@ export interface TokenPair {
   tokenType: 'Bearer';
   /** Access-token lifetime in seconds. */
   expiresIn: number;
+}
+
+/**
+ * Refuse to mint a Portal session for someone who may not open the Portal.
+ *
+ * Two separate revocations land here, deliberately with two distinct codes so
+ * the sign-in screen can say which one happened:
+ *
+ * - `PORTAL_ACCESS_REVOKED` — this person's own `core.app_access` grant for
+ *   'portal' is gone. Until now that grant was written by three code paths and
+ *   read by none, so the Portal's own access column was decorative.
+ * - `TENANT_SUSPENDED` — every client they belong to is switched off.
+ *
+ * Platform admins bypass both. Aidapt staff are the people who undo a
+ * suspension or restore a grant, and a gate that can lock them out of the
+ * screen where it is lifted is a gate that eventually needs a DBA. Note this
+ * is the live `is_platform_admin` column, not the token claim, matching
+ * `requirePlatformAdmin`.
+ *
+ * Someone with no active membership at all is NOT refused — that was already
+ * true before this change (they sign in, `/auth/me` works, every tenant route
+ * 403s), and it is how a person mid-invitation behaves. Widening the gate to
+ * cover them would be a separate decision with its own blast radius.
+ *
+ * 403 rather than 401 throughout: the credentials were correct and re-entering
+ * them will not help, which is also what stops the client from bouncing into a
+ * refresh loop the way a 401 would.
+ */
+async function assertPortalAccess(userId: string): Promise<void> {
+  const state = await authRepo.portalAccessState(userId);
+  if (state.isPlatformAdmin) return;
+
+  if (!state.hasPortalAccess) {
+    throw new AppError(
+      'Your access to the Portal has been removed — contact your organisation’s admin',
+      403,
+      'PORTAL_ACCESS_REVOKED',
+    );
+  }
+  if (state.activeMemberships > 0 && state.activeMemberships === state.suspendedMemberships) {
+    // Deliberately says nothing about WHY. The reason recorded on the tenant
+    // is an internal note (non-payment, a dispute, an incident) and is never
+    // the client's to read from a login box.
+    throw new AppError(
+      'Your organisation’s access is currently suspended — contact Aidapt',
+      403,
+      'TENANT_SUSPENDED',
+    );
+  }
 }
 
 /** Issues a fresh access token (with current claims) + a stored refresh token. */
@@ -126,6 +175,12 @@ export const authService = {
       : await verifyPassword(input.password, DUMMY_HASH).then(() => false);
     if (!cred || !ok) throw new UnauthorizedError('Invalid email or password');
 
+    // After the password check, never before: the refusal reasons name a real
+    // account, so reaching them without proving ownership of it would let
+    // anyone probe which addresses are registered and whose client is
+    // suspended.
+    await assertPortalAccess(cred.user_id);
+
     const tokens = await issueTokens(cred.user_id, cred.email, userAgent);
     return { userId: cred.user_id, ...tokens };
   },
@@ -167,6 +222,9 @@ export const authService = {
     }
 
     await authRepo.consumeOtpCode(otp.id);
+    // Same gate as password sign-in, and after the code is consumed for the
+    // same reason it sits after the password check in `login`.
+    await assertPortalAccess(cred.user_id);
     const tokens = await issueTokens(cred.user_id, cred.email, userAgent);
     return { userId: cred.user_id, ...tokens };
   },
@@ -181,6 +239,11 @@ export const authService = {
     if (!found) throw new UnauthorizedError('Invalid or expired refresh token');
 
     await authRepo.revokeRefreshToken(hash);
+    // The gate has to be here as well as on sign-in, or a session that was
+    // live when access was revoked would keep renewing itself for as long as
+    // the browser stayed open. The presented token is already revoked above,
+    // so a refusal here ends the session rather than leaving it retryable.
+    await assertPortalAccess(found.userId);
     const email = await authRepo.getEmailByUserId(found.userId);
     return issueTokens(found.userId, email, userAgent);
   },

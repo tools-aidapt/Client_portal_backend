@@ -1,0 +1,26 @@
+-- ============================================================================
+-- 0040  core.tenant_status gains 'suspended'
+-- ============================================================================
+--
+-- `core.tenant_status` modelled the commercial LIFECYCLE of a client
+-- (prospect → onboarding → active → offboarded) and nothing else. There was no
+-- way to say "this client is still a client, but nobody there may sign in
+-- right now" — a non-payment hold, a security incident, a contract dispute.
+-- The only lever was `offboarded`, which means the engagement ENDED: using it
+-- as a pause would misreport every client on hold as a former client, and
+-- switching back could only ever guess 'active' even for a tenant that was
+-- halfway through onboarding.
+--
+-- This file does NOTHING but add the value, and that is deliberate. Postgres
+-- refuses to USE an enum value in the same transaction that added it, and the
+-- migrate runner wraps each file in its own transaction — so the columns, the
+-- check constraint and the partial index that all reference 'suspended' live
+-- in 0041, which runs afterwards. Merging the two files back together will
+-- fail with "unsafe use of new value".
+--
+-- `core.tenant_status` is shared with the LMS and Support Desk schemas in the
+-- same database. Adding a value is additive — no existing row changes and no
+-- existing query breaks — but both apps will start seeing a status their own
+-- switch statements have never met, so this needs flagging to those teams.
+
+alter type core.tenant_status add value if not exists 'suspended';

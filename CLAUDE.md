@@ -201,6 +201,62 @@ email is registered, to avoid leaking account existence.
     Frontend: `/admin/users` behind `AdminGate` (its first real use), reading the
     tenant from the topbar picker. Verified live: `scripts/smoke-members.ts`,
     22/22 checks against real Kenafric data, values restored afterwards.
+  - [x] **Access can now actually be REVOKED — added 2026-09-15** (migrations
+    `0040`/`0041`). Two controls that existed as data and did nothing:
+    - **`core.app_access` was decorative for the Portal.** It was written by
+      registration and by both admin screens, but read only by `/auth/me` (to
+      draw the app switcher) and by the LMS dashboard tile. No sign-in path and
+      no middleware ever consulted it, so revoking someone's access changed a
+      badge and nothing else. Worse, the Portal grant could not even be
+      written: `membersRepo.setAppAccess` force-added `'portal'` to every call,
+      so the one app whose access was never checked was also the only one that
+      could not be taken away. Both halves are fixed together — the write now
+      honours an exact set, and `assertPortalAccess` gates `/auth/login`,
+      `/auth/otp/verify` and `/auth/refresh` (403 `PORTAL_ACCESS_REVOKED`).
+    - **`core.tenants.status` was read by nothing at all.** The enum modelled
+      the commercial lifecycle (`prospect`→`onboarding`→`active`→`offboarded`)
+      and there was no way to say "still a client, but nobody signs in right
+      now". `0040` adds `suspended`; `0041` adds `status_before_suspension` +
+      `suspended_at`/`by`/`reason`, a check constraint keeping the pair
+      coherent, and a partial index. `POST /admin/tenants/:id/suspend|resume`
+      (platform admin only).
+    - **Revoking has to bite mid-session, not in 15 minutes.** An access token
+      stays cryptographically valid for its full life, so `requireTenantRole`
+      re-checks both facts on every tenant-scoped request — the same reasoning
+      that already moved role resolution off the frozen JWT claim. `suspend`
+      additionally revokes every active member's `app = 'portal'` refresh
+      token inside its transaction, so live sessions die at once rather than
+      renewing themselves forever.
+    - **Every gate exempts platform admins, deliberately.** Aidapt staff are
+      who lift a suspension or restore a grant; a gate that can close on the
+      screen where it is lifted eventually needs a DBA. For the same reason
+      `is_protected` (Aidapt's own group) cannot be suspended at all — refused
+      in the SQL `WHERE`, not just the controller.
+    - **Resume restores the PREVIOUS status, not a guessed `active`** — a
+      client suspended mid-onboarding comes back as `onboarding`. Sessions are
+      not restored; everyone signs in again. `finalizeOnboarding` had to learn
+      about this: its old `status = 'active' where status = 'onboarding'`
+      simply missed on a suspended tenant, which would have left the
+      suspension remembering `onboarding` and silently rewound a finished
+      onboarding on resume.
+    - **Lockout guards differ by caller, on purpose.** Neither endpoint lets
+      you revoke your OWN Portal access (400). `PATCH /team/:userId/apps`
+      additionally refuses taking it from the client's last admin able to open
+      the Portal (409 `LAST_PORTAL_ADMIN`, pointing at Aidapt);
+      `PATCH /admin/clients/:id/members/:userId/apps` has no such guard,
+      because that refusal would otherwise leave nobody able to perform a
+      legitimate offboarding.
+    - A suspended tenant's pending invitations stop working but are **not**
+      withdrawn — they work again on resume, which is the whole difference
+      between a suspension and an offboarding.
+    - Frontend: the Portal pill is togglable on both `/team` and
+      `/admin/users` (which gained an App access column it never had), locked
+      only on your own row; `/admin/users` gained a Disable/Enable client
+      button behind a typed `DISABLE` confirmation, hidden on the Aidapt group.
+    - Verified live: `scripts/smoke-access-revocation.ts`, 30/30 over a
+      throwaway tenant it creates and deletes — including that a valid OTP and
+      a pre-revocation refresh token are both refused, that suspend killed 4
+      live sessions, and that resume put `onboarding` back.
 - [ ] **7. Notifications** — table + reads done; most sources already emit
   (onboarding, voting, reports). Remaining: wire remaining event sources as built.
   - [x] **The report sync now notifies too.** `reportsRepo.publish` was the only
@@ -309,6 +365,42 @@ email is registered, to avoid leaking account existence.
 - [x] **Passwordless OTP login** (migration `0019`) — `POST /auth/otp/request`
   (email a 6-digit code) + `/auth/otp/verify` (code → token pair), alongside
   (not replacing) password login. `core.otp_codes`, RLS deny-all.
+- [ ] **TODO — guided first-run tour.** Requested 2026-08-15, not started. A
+  spotlight walkthrough for a newly-registered user: highlight a control,
+  explain it, move on ("invite your team from here", "this is your sprint",
+  "raise a request here"). The hard parts are NOT the highlighting:
+  - **Where "already seen it" lives.** Must be a column (e.g.
+    `core.profiles.tour_seen_version int`), not localStorage — localStorage
+    re-runs the whole tour on a new browser, can't be reset for someone who
+    asks, and can't re-run just the changed steps when the tour is updated.
+    Versioning it (rather than a boolean) is what allows "show step 4 again
+    because it moved".
+  - **Anchors must be explicit.** Steps target `data-tour="invite-button"`
+    attributes, never CSS classes or DOM position. Tailwind classes change
+    every time someone restyles a page, and a tour that silently points at
+    nothing is worse than no tour — it will break quietly and nobody will
+    notice, because nobody re-runs a tour they've already seen.
+  - **Role-aware, or it lies.** A `member` has no Team page and no invite
+    button (`RoleGate minRole="admin"`), so "invite your team" must not be
+    shown to them. Steps need the same filter the nav already applies
+    (`minRole` / `adminOnly` in `lib/nav.ts`) rather than a second, drifting
+    copy of that logic.
+  - **Do not point at empty tiles.** A brand-new tenant has no sprint, no
+    reports and no projects — precisely the state a first-run tour runs in.
+    Aim at navigation and actions, not data, or the first thing a new client
+    sees is a tour of empty boxes.
+  - **Multi-page is the expensive part.** A single-page tour (Dashboard) is
+    straightforward; spanning Dashboard → Team → Wishlist means driving the
+    router, waiting for each mount, and coping with the user navigating away
+    mid-tour. Ship one page first.
+  - **Library:** `driver.js` (MIT, ~5KB, framework-agnostic) over
+    `react-joyride` — joyride is React-specific and its peer range has lagged
+    React majors, and this app is on React 19.2. driver.js being vanilla means
+    no peer-dependency argument at all. Neither is load-bearing enough to
+    hand-roll.
+  - Needs a "Replay tour" entry (Account page) — people dismiss these
+    instantly and then ask where it went — and must be escapable and
+    resumable, never a modal that traps someone out of their own portal.
 
 **Auth pivot (migration `0014`):** replaced Supabase Auth with **self-hosted JWT**
 (email/password, bcrypt, access + rotating refresh tokens). `core.user_credentials`
@@ -339,6 +431,37 @@ STUBBED (log-only, need real integration):
 - Voting winner **ClickUp write-back** (`voting.service.ts`).
 
 ## Known findings / gotchas
+
+- **TODO — nothing stops the same person being invited twice.** Found
+  2026-08-15, deliberately NOT fixed yet. `invitationsService.invite` does no
+  validation at all: it inserts, enqueues the outbox row and sends the email.
+  There is no check for an existing live invitation and no check that the
+  person is already a member, so pressing "Send invitation" twice produces two
+  valid tokens and two real emails, and the Invitations card lists the address
+  twice with no way to tell which link the recipient will use.
+  `invitations_email_idx` looks like it guards this — `(email) where status =
+  'pending'` — but it is NOT unique; it only makes the lookup fast.
+  Live state when found: Allied Bank had 2 pending invitations to
+  `m.rehman@aidapt.co`, created 8 minutes apart. (That address IS a Kenafric
+  member but is not an Allied Bank one, so this was purely a duplicate, not an
+  invite-an-existing-member case — the latter is still unguarded and worth
+  covering at the same time.)
+  **Fix when picked up, both layers:**
+  1. A migration that first collapses existing duplicates — keep the NEWEST
+     per `(tenant_id, lower(email))` and set the rest to `'revoked'`, never
+     delete, since `'revoked'` is exactly what `registerViaInvitation` reads to
+     refuse a token — then adds
+     `create unique index … on core.invitations (tenant_id, lower(email))
+     where status = 'pending'`. Partial and case-folded: accepted/expired rows
+     are history and must stay, the same person may hold live invitations to
+     two different tenants, and an index that only holds when the caller
+     remembers to lowercase is not a constraint.
+  2. A check in `invitationsService.invite` for a readable 409 ("an invitation
+     to X is already pending — withdraw it first"), plus one for an existing
+     active membership. The DB index is what actually holds under a
+     double-clicked button; the service check is only there for the message.
+  The Invitations card (`/team`) already exposes Withdraw, so the manual
+  workaround today is to withdraw the stray one.
 - **NOTHING DRAINS THE OUTBOX, so every queued email silently never sends.**
   Confirmed 2026-08-07: no `npm run worker:outbox` process was running, and no
   n8n workflow calls `POST /internal/outbox/drain` (the two Portal workflows —

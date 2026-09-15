@@ -97,6 +97,7 @@ export const authRepo = {
         invited_by: string | null;
         apps: string[] | null;
         expired: boolean;
+        tenant_suspended: boolean;
       }>(
         // `apps` is cast to text[] deliberately. It is declared
         // `core.app_type[]`, and node-postgres ships no parser for a
@@ -107,10 +108,13 @@ export const authRepo = {
         // with `invalid input value for enum core.app_type: "{"`. That made
         // every invitation registration a 500. A plain text[] has a built-in
         // parser and comes back as a real array, so the cast is the whole fix.
-        `select id, tenant_id, email, role, status, invited_by,
-                apps::text[] as apps,
-                (expires_at <= now()) as expired
-           from core.invitations where token = $1 for update`,
+        `select i.id, i.tenant_id, i.email, i.role, i.status, i.invited_by,
+                i.apps::text[] as apps,
+                (i.expires_at <= now()) as expired,
+                (t.status = 'suspended') as tenant_suspended
+           from core.invitations i
+           join core.tenants t on t.id = i.tenant_id
+          where i.token = $1 for update of i`,
         [input.token],
       );
       const inv = rows[0];
@@ -123,6 +127,17 @@ export const authRepo = {
           [inv.id],
         );
         throw new BadRequestError('Invitation expired');
+      }
+      // A suspended client means nobody there gets in, and a pending
+      // invitation is a way in. Refused BEFORE the account is created rather
+      // than at token issue, so a suspension can't leave behind half-made
+      // accounts that nothing ever finishes. The invitation is left `pending`
+      // on purpose — it becomes usable again the moment the client is resumed,
+      // which is the whole difference between a suspension and an offboarding.
+      if (inv.tenant_suspended) {
+        throw new ForbiddenError(
+          'This organisation’s access is currently suspended — contact Aidapt',
+        );
       }
 
       const existing = await client.query(
@@ -248,6 +263,56 @@ export const authRepo = {
   /** Mark an OTP code used so it can't be replayed. */
   async consumeOtpCode(id: string): Promise<void> {
     await pool.query(`update core.otp_codes set consumed_at = now() where id = $1`, [id]);
+  },
+
+  /**
+   * Everything the sign-in gate needs about one identity, in one round trip.
+   *
+   * Three facts decide whether a Portal session may be minted at all, and they
+   * were previously checked nowhere: `core.app_access` was written by
+   * invitations and by the admin screens but read only by `/auth/me` (for
+   * display) and by the LMS tile, so revoking Portal access changed a badge
+   * and nothing else; and `core.tenants.status` was never consulted by any
+   * code path on any request.
+   *
+   * `memberships` counts only ACTIVE ones, matching `resolveRoles` — a
+   * suspended membership already grants nothing, so it must not be what keeps
+   * someone's sign-in alive when their only other tenant is suspended.
+   */
+  async portalAccessState(userId: string): Promise<{
+    isPlatformAdmin: boolean;
+    hasPortalAccess: boolean;
+    activeMemberships: number;
+    suspendedMemberships: number;
+  }> {
+    const { rows } = await pool.query<{
+      is_platform_admin: boolean;
+      has_portal_access: boolean;
+      active_memberships: string;
+      suspended_memberships: string;
+    }>(
+      `select p.is_platform_admin,
+              exists (
+                select 1 from core.app_access aa
+                 where aa.user_id = p.id and aa.app = 'portal' and aa.status = 'active'
+              ) as has_portal_access,
+              count(m.tenant_id)::text as active_memberships,
+              count(m.tenant_id) filter (where t.status = 'suspended')::text
+                as suspended_memberships
+         from core.profiles p
+         left join core.memberships m on m.user_id = p.id and m.status = 'active'
+         left join core.tenants t on t.id = m.tenant_id
+        where p.id = $1
+        group by p.id, p.is_platform_admin`,
+      [userId],
+    );
+    const row = rows[0];
+    return {
+      isPlatformAdmin: row?.is_platform_admin === true,
+      hasPortalAccess: row?.has_portal_access === true,
+      activeMemberships: Number(row?.active_memberships ?? 0),
+      suspendedMemberships: Number(row?.suspended_memberships ?? 0),
+    };
   },
 
   /**

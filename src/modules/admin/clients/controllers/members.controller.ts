@@ -85,12 +85,36 @@ export const membersController = {
    * Aidapt setting which apps one client's person may open. Same operation the
    * org's own admin has via PATCH /team/:userId/apps, but reachable for any
    * tenant rather than only the caller's own.
+   *
+   * Carries ONE of that endpoint's two Portal guards. Self-revoke is refused
+   * here too, for the same reason `update` refuses a self-demotion: the click
+   * would remove the access needed to undo the click. The last-admin guard is
+   * deliberately absent — taking the Portal off a client's final admin is a
+   * legitimate Aidapt action (an offboarding, a security hold), and Aidapt is
+   * exactly who the client-side guard tells people to go to. Blocking it here
+   * would leave nobody able to perform it at all.
    */
   async setApps(req: Request, res: Response): Promise<void> {
     const { apps } = req.body as { apps: string[] };
+    const tenantId = req.params.id!;
+    const userId = req.params.userId!;
+
+    if (!apps.includes('portal') && userId === req.auth?.user.id) {
+      // Only if they actually still have it, so re-saving an unchanged set
+      // stays idempotent rather than starting to 400.
+      const target = await membersRepo.byId(tenantId, userId);
+      if (target?.apps.includes('portal')) {
+        throw new AppError(
+          'You cannot revoke your own Portal access — ask another Aidapt admin to do it',
+          400,
+          'CANNOT_REVOKE_OWN_PORTAL_ACCESS',
+        );
+      }
+    }
+
     const member = await membersRepo.setAppAccess(
-      req.params.id!,
-      req.params.userId!,
+      tenantId,
+      userId,
       apps,
       req.auth?.user.id ?? null,
     );

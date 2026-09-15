@@ -145,9 +145,20 @@ export const membersRepo = {
    * cannot reach a member of another client by guessing a user id. Returns null
    * when the person is not a member here, which is what enforces that.
    *
-   * Portal access is never removed by this: an account that cannot open the
-   * Portal has no way back in to be re-granted anything, and revoking someone
-   * entirely is what membership `status` is for.
+   * Portal used to be forced into `apps` on every call, so it could be granted
+   * and never taken away. The argument was that an account which cannot open
+   * the Portal has no way back in to be re-granted anything — but that is a
+   * statement about who may make the change, not about whether the state is
+   * expressible, and the person re-granting it is an admin on a different
+   * account. Meanwhile the grant it protected did nothing: no sign-in path read
+   * `core.app_access` for 'portal' at all, so the one app whose access could
+   * not be revoked was also the one whose access was never checked. Both halves
+   * are fixed together — this method now honours an exact set, and the auth
+   * gate (`authRepo.portalAccessState`) makes the revocation bite.
+   *
+   * The guards that stopped a revoke stranding someone live in the callers,
+   * where the identity of the admin doing it is known: see `teamController`
+   * and `membersController`.
    */
   async setAppAccess(
     tenantId: string,
@@ -161,7 +172,7 @@ export const membersRepo = {
     );
     if ((belongs.rowCount ?? 0) === 0) return null;
 
-    const wanted = Array.from(new Set(['portal', ...apps]));
+    const wanted = Array.from(new Set(apps));
 
     await withTransaction(async (client) => {
       await client.query(
@@ -190,6 +201,51 @@ export const membersRepo = {
       [tenantId, userId],
     );
     return rows[0] ?? null;
+  },
+
+  /**
+   * One member of one tenant, in the same shape as `list`. Null when that
+   * person has no membership here — which is also what keeps a guess at
+   * another client's user id from resolving.
+   */
+  async byId(tenantId: string, userId: string): Promise<TenantMember | null> {
+    const { rows } = await pool.query<TenantMember>(
+      `select ${MEMBER_COLUMNS}
+         from core.memberships m
+         join core.profiles p on p.id = m.user_id
+         left join core.user_credentials c on c.user_id = m.user_id
+        where m.tenant_id = $1 and m.user_id = $2`,
+      [tenantId, userId],
+    );
+    return rows[0] ?? null;
+  },
+
+  /**
+   * How many OTHER people could still administer this client's Portal if the
+   * given person lost their Portal access right now.
+   *
+   * Counts an active membership, an admin-grade role, and a live `portal`
+   * grant together, because all three are required to be of any use: a
+   * suspended admin cannot sign in, and an admin without the app cannot open
+   * the screen where access is handed back.
+   *
+   * Backs the last-admin guard on the client's own Team page. Aidapt's
+   * equivalent endpoint deliberately does NOT consult this — see
+   * `membersController.setApps`.
+   */
+  async otherActivePortalAdmins(tenantId: string, excludingUserId: string): Promise<number> {
+    const { rows } = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from core.memberships m
+         join core.app_access aa
+           on aa.user_id = m.user_id and aa.app = 'portal' and aa.status = 'active'
+        where m.tenant_id = $1
+          and m.user_id <> $2
+          and m.status = 'active'
+          and m.role in ('admin', 'super_admin')`,
+      [tenantId, excludingUserId],
+    );
+    return Number(rows[0]?.count ?? 0);
   },
 
   /**
