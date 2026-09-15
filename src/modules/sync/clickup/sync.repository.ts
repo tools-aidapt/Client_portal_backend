@@ -66,7 +66,11 @@ export const syncRepo = {
     const { rows } = await pool.query<{ raw_status: string; bucket: TaskBucket }>(
       `select raw_status, bucket from portal.clickup_status_map
         where tenant_id is null or tenant_id = $1
-        order by (tenant_id is null)`, // globals first, tenant rows overwrite
+        order by (tenant_id is null) desc`, // globals first, tenant rows overwrite
+      // `desc` is load-bearing. In Postgres false < true, so plain ascending put
+      // the TENANT rows first and the globals last — and since the loop below is
+      // a Map.set per row, last write wins, so globals silently overrode every
+      // per-tenant override, the exact opposite of this method's contract.
       [tenantId],
     );
     const map = new Map<string, TaskBucket>();

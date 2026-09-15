@@ -75,6 +75,17 @@ export const syncService = {
    * schedule calls.
    */
   async syncSpaces(spaceIds: string[], ctx?: SyncContext): Promise<SyncResult & { spaces: number }> {
+    // An empty space list is a misconfiguration, never a legitimate no-op: the
+    // loop below would walk nothing, upsert nothing, and finish 'success' in
+    // ~140ms. That is precisely how this sync died unnoticed on 2026-08-13 and
+    // left every client's Projects page 36 days stale. Fail loudly instead.
+    if (spaceIds.length === 0) {
+      throw new AppError(
+        'syncSpaces called with no space ids: set CLICKUP_SPACE_IDS or pass space_ids',
+        500,
+        'NO_SYNC_SPACES',
+      );
+    }
     const runId = await syncRepo.startRun('spaces', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
@@ -662,26 +673,31 @@ export const syncService = {
   },
 
   /**
-   * Nightly: refresh portal.sprints from the given Sprints folder (if provided)
-   * and recompute which sprint is active by date.
+   * Nightly: refresh portal.sprints from the Sprints folder and recompute which
+   * sprint is active by date.
+   *
+   * `sprintsFolderId` is REQUIRED, and deliberately so. It used to be optional,
+   * and an omitted id skipped the ClickUp fetch while still finishing the run as
+   * `success` — which is exactly what the Sync Console button did. It recomputed
+   * `is_active` over rows that stopped growing at Sprint 7, discovered no new
+   * sprint for four weeks, and reported nothing wrong. Both callers now default
+   * to SPRINT_FOLDER_ID; the parameter stays for one-off backfills.
    */
-  async refreshSprints(sprintsFolderId?: string, ctx?: SyncContext): Promise<{ upserted: number; active: number }> {
+  async refreshSprints(sprintsFolderId: string, ctx?: SyncContext): Promise<{ upserted: number; active: number }> {
     const runId = await syncRepo.startRun('sprints', null, ctx?.triggeredBy ?? null);
     try {
       let upserted = 0;
-      if (sprintsFolderId) {
-        const client = new ClickUpClient();
-        const lists = await client.getFolderLists(sprintsFolderId);
-        for (const list of lists) {
-          await syncRepo.upsertSprint({
-            clickupListId: list.id,
-            name: list.name,
-            sprintNumber: parseSprintNumber(list.name),
-            startsOn: list.start_date ? new Date(Number(list.start_date)).toISOString().slice(0, 10) : null,
-            endsOn: list.due_date ? new Date(Number(list.due_date)).toISOString().slice(0, 10) : null,
-          });
-          upserted++;
-        }
+      const client = new ClickUpClient();
+      const lists = await client.getFolderLists(sprintsFolderId);
+      for (const list of lists) {
+        await syncRepo.upsertSprint({
+          clickupListId: list.id,
+          name: list.name,
+          sprintNumber: parseSprintNumber(list.name),
+          startsOn: list.start_date ? new Date(Number(list.start_date)).toISOString().slice(0, 10) : null,
+          endsOn: list.due_date ? new Date(Number(list.due_date)).toISOString().slice(0, 10) : null,
+        });
+        upserted++;
       }
       const active = await syncRepo.recomputeActiveSprints();
       await syncRepo.finishRun(runId, 'success', upserted);

@@ -11,7 +11,12 @@ import { config } from '@config/index.js';
 import { logger } from '@infra/logger/index.js';
 import { ClickUpClient } from '@infra/clickup/client.js';
 import { syncService } from './sync.service.js';
-import { CASE_STUDY_FOLDER_ID, WISHLIST_LIST_ID } from './sync.constants.js';
+import {
+  CASE_STUDY_FOLDER_ID,
+  DEFAULT_SYNC_SPACE_IDS,
+  SPRINT_FOLDER_ID,
+  WISHLIST_LIST_ID,
+} from './sync.constants.js';
 
 /**
  * Internal sync endpoints (design §10.6). Service-secret only; called by
@@ -39,14 +44,23 @@ syncRoutes.post(
   }),
 );
 
-const sprintsBody = z.object({ sprints_folder_id: z.string().optional() });
+const sprintsBody = z.object({ sprints_folder_id: z.string().min(1).optional() });
 
+/**
+ * Refresh portal.sprints from the ClickUp Sprint folder. Defaults to
+ * SPRINT_FOLDER_ID; `sprints_folder_id` overrides it for a one-off backfill.
+ *
+ * The default is the fix for a silent four-week outage: the id arrived only in
+ * the n8n request body, the body stopped carrying it, and the sync then skipped
+ * ClickUp and reported success. Same failure the wishlist route above already
+ * defends against.
+ */
 syncRoutes.post(
   '/sprints',
   validate({ body: sprintsBody }),
   asyncHandler(async (req, res) => {
-    const result = await syncService.refreshSprints(req.body.sprints_folder_id);
-    res.status(StatusCodes.OK).json(ok(result));
+    const folderId = req.body.sprints_folder_id ?? SPRINT_FOLDER_ID;
+    res.status(StatusCodes.OK).json(ok(await syncService.refreshSprints(folderId)));
   }),
 );
 
@@ -67,13 +81,14 @@ syncRoutes.post(
         .json(fail('CLICKUP_NOT_CONFIGURED', 'CLICKUP_API_TOKEN is not set'));
       return;
     }
-    const spaceIds = req.body.space_ids ?? config.clickup.spaceIds;
-    if (spaceIds.length === 0) {
-      res
-        .status(StatusCodes.BAD_REQUEST)
-        .json(fail('NO_SPACES', 'No spaces to sync: set CLICKUP_SPACE_IDS or pass space_ids'));
-      return;
-    }
+    // Body wins, then CLICKUP_SPACE_IDS, then the committed defaults. The last
+    // fallback matters: with none of the three set this used to 400 here while
+    // the Sync Console's own call to syncSpaces([]) reported success having
+    // walked nothing, so the schedule looked healthy for 36 days.
+    const configured = config.clickup.spaceIds.length
+      ? config.clickup.spaceIds
+      : DEFAULT_SYNC_SPACE_IDS;
+    const spaceIds = req.body.space_ids?.length ? req.body.space_ids : configured;
     res.status(StatusCodes.OK).json(ok(await syncService.syncSpaces(spaceIds)));
   }),
 );

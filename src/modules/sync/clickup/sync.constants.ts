@@ -50,3 +50,41 @@ export const CASE_STUDY_FOLDER_ID = '90129732418';
  * cannot nest folders — and all five carry the identical name, so neither the
  * folder name nor `clickup_folder_id` can route a Doc to a tenant.
  */
+
+/**
+ * The "Sprint" folder (Sprint space `90127516104`). Every fortnight's sprint is
+ * a new LIST inside this one folder — the folder itself never changes — so the
+ * sprint sync can discover new sprints from a fixed id.
+ *
+ * This id used to live only in the n8n schedule's request body, which is the
+ * failure this file's header warns about: the request body stopped carrying it,
+ * `refreshSprints` skipped the ClickUp fetch entirely, and every run still
+ * reported success while upserting nothing. `portal.sprints` froze at Sprint 7
+ * on 2026-08-10 and every client's Dashboard read "No active sprint" for four
+ * weeks, because `activeSprint()` is a single global row, not a per-tenant one.
+ */
+export const SPRINT_FOLDER_ID = '901211104502';
+
+/**
+ * The two spaces the hourly delivery sweep walks: `Delivery` (every client
+ * folder, one list per project) and `Sprint` (the fortnightly sprint lists).
+ *
+ * These lived ONLY in `CLICKUP_SPACE_IDS` and the n8n schedule's request body,
+ * which is the exact failure this file's header warns about — and it happened:
+ * the env var went missing from `.env`, so `config.clickup.spaceIds` fell back
+ * to `[]`, `syncSpaces([])` walked zero spaces, and every run since 2026-08-13
+ * reported SUCCESS while upserting 0 rows. `portal.task_cache` froze at
+ * 2026-08-10 for 1,146 of its 1,159 delivery tasks — 36 days of stale phases,
+ * statuses and progress in front of all five clients — because nothing in the
+ * run record distinguishes "walked every space, nothing changed" from "walked
+ * nothing at all".
+ *
+ * Every other sync entity survived precisely because its location is a constant
+ * in this file rather than an env var. These two now are too; the env var still
+ * wins when set, so a staging workspace can override it.
+ */
+export const DELIVERY_SPACE_ID = '90127425952';
+export const SPRINT_SPACE_ID = '90127516104';
+
+/** The spaces `syncSpaces` walks when `CLICKUP_SPACE_IDS` is unset. */
+export const DEFAULT_SYNC_SPACE_IDS = [DELIVERY_SPACE_ID, SPRINT_SPACE_ID];

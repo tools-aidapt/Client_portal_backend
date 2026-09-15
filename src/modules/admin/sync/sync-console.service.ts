@@ -4,7 +4,9 @@ import { syncService, type SyncContext } from '@modules/sync/clickup/sync.servic
 import { syncRepo } from '@modules/sync/clickup/sync.repository.js';
 import {
   CASE_STUDY_FOLDER_ID,
+  DEFAULT_SYNC_SPACE_IDS,
   PROCESS_LIST_ID,
+  SPRINT_FOLDER_ID,
   WISHLIST_LIST_ID,
 } from '@modules/sync/clickup/sync.constants.js';
 import { syncConsoleRepo } from './sync-console.repository.js';
@@ -42,16 +44,25 @@ export const SYNC_ENTITIES: SyncEntityDef[] = [
   {
     key: 'sprints',
     label: 'Sprint definitions',
-    description: 'Refreshes portal.sprints from the Sprints folder and recomputes which sprint is active by date.',
+    description:
+      'Reads every sprint list in the ClickUp Sprint folder into portal.sprints, then recomputes which one is active by date. Run this first each fortnight: a sprint the Portal has never read cannot be the active one.',
     scale: 'fast',
-    run: (ctx) => syncService.refreshSprints(undefined, ctx).then((r) => ({ upserted: r.upserted })),
+    run: (ctx) =>
+      syncService.refreshSprints(SPRINT_FOLDER_ID, ctx).then((r) => ({ upserted: r.upserted })),
   },
   {
     key: 'spaces',
     label: 'Delivery spaces walk',
     description: 'The main pull. Walks every configured ClickUp space and upserts task_cache. This is what the hourly cron runs.',
     scale: 'slow',
-    run: (ctx) => syncService.syncSpaces(config.clickup.spaceIds, ctx),
+    // Falls back to the committed space ids: this step is the ONLY one whose
+    // location came from env rather than sync.constants.ts, and when
+    // CLICKUP_SPACE_IDS went missing it silently walked nothing for 36 days.
+    run: (ctx) =>
+      syncService.syncSpaces(
+        config.clickup.spaceIds.length ? config.clickup.spaceIds : DEFAULT_SYNC_SPACE_IDS,
+        ctx,
+      ),
   },
   {
     key: 'sprint',
