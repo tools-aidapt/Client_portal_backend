@@ -99,7 +99,7 @@ export function requireTenantRole(min: RoleName): RequestHandler {
       // Same codes the sign-in gate uses, so the client can treat "your access
       // ended mid-session" identically wherever it surfaces.
       throw new AppError(
-        'Your access to the Portal has been removed',
+        'Your access to the Hub has been removed',
         403,
         'PORTAL_ACCESS_REVOKED',
       );
@@ -130,7 +130,7 @@ export function requireTenantRole(min: RoleName): RequestHandler {
     // and a 401 would just bounce the user out of a session that is perfectly
     // valid. 403 is the truthful answer: signed in, not entitled here.
     if (!isRoleName(role)) {
-      throw new ForbiddenError('This role has no Portal access');
+      throw new ForbiddenError('This role has no Hub access');
     }
     if (!meetsRole(role, min)) {
       throw new ForbiddenError(`Requires role ${min}`);

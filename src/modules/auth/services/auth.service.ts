@@ -65,7 +65,7 @@ async function assertPortalAccess(userId: string): Promise<void> {
 
   if (!state.hasPortalAccess) {
     throw new AppError(
-      'Your access to the Portal has been removed — contact your organisation’s admin',
+      'Your access to the Hub has been removed — contact your organisation’s admin',
       403,
       'PORTAL_ACCESS_REVOKED',
     );

@@ -42,11 +42,11 @@ describe('guessFirstName', () => {
 });
 
 describe('renderInviteEmail', () => {
-  it('uses the Partner Portal login subject and preheader', () => {
+  it('uses The Aidapt Hub login subject and preheader', () => {
     const out = renderInviteEmail(vars);
     expect(out.subject).toBe(INVITE_EMAIL_SUBJECT);
     expect(out.preheader).toBe(INVITE_EMAIL_PREHEADER);
-    expect(out.subject).toBe('Your Aidapt Partner Portal login');
+    expect(out.subject).toBe('Your login for The Aidapt Hub');
     expect(out.preheader).toBe(
       'Set your password, see what you have access to, clear Level 1.',
     );
@@ -56,7 +56,7 @@ describe('renderInviteEmail', () => {
     const { text } = renderInviteEmail(vars);
     expect(text).toContain('Hi Sarah,');
     expect(text).toContain(
-      'You have a seat on the Aidapt Partner Portal. It is where your work with Aidapt lives, and where you learn to run it yourself.',
+      'You have a seat on The Aidapt Hub. It is where your work with Aidapt lives, and where you learn to run it yourself.',
     );
     expect(text).toContain('Get in');
     expect(text).toContain('https://portal.aidapt.co/register?token=abc');
@@ -69,7 +69,7 @@ describe('renderInviteEmail', () => {
     expect(text).toContain(
       'Academy. Your track is Kenafric, starting at Level 1. Levels move as you finish modules and apply them to real work, not quizzes. Your team sees your progress and you see theirs. That is on purpose.',
     );
-    expect(text).toContain(`Partner Portal. ${DEFAULT_APP_3_LINE}`);
+    expect(text).toContain(`The Aidapt Hub. ${DEFAULT_APP_3_LINE}`);
     expect(text).toContain('Start here');
     expect(text).toContain('Set your password. Open the Academy. Finish Module 1.');
     expect(text).toContain(

@@ -105,7 +105,7 @@ export const membersController = {
       const target = await membersRepo.byId(tenantId, userId);
       if (target?.apps.includes('portal')) {
         throw new AppError(
-          'You cannot revoke your own Portal access — ask another Aidapt admin to do it',
+          'You cannot revoke your own Hub access — ask another Aidapt admin to do it',
           400,
           'CANNOT_REVOKE_OWN_PORTAL_ACCESS',
         );

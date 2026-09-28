@@ -45,7 +45,7 @@ export const SYNC_ENTITIES: SyncEntityDef[] = [
     key: 'sprints',
     label: 'Sprint definitions',
     description:
-      'Reads every sprint list in the ClickUp Sprint folder into portal.sprints, then recomputes which one is active by date. Run this first each fortnight: a sprint the Portal has never read cannot be the active one.',
+      'Reads every sprint list in the ClickUp Sprint folder into portal.sprints, then recomputes which one is active by date. Run this first each fortnight: a sprint the Hub has never read cannot be the active one.',
     scale: 'fast',
     run: (ctx) =>
       syncService.refreshSprints(SPRINT_FOLDER_ID, ctx).then((r) => ({ upserted: r.upserted })),

@@ -58,7 +58,7 @@ export const teamController = {
         // undo their own click.
         if (userId === actorId) {
           throw new AppError(
-            'You cannot revoke your own Portal access — ask a colleague, or Aidapt, to do it',
+            'You cannot revoke your own Hub access — ask a colleague, or Aidapt, to do it',
             400,
             'CANNOT_REVOKE_OWN_PORTAL_ACCESS',
           );
@@ -73,7 +73,7 @@ export const teamController = {
           (await membersRepo.otherActivePortalAdmins(tenantId, userId)) === 0
         ) {
           throw new AppError(
-            'That is the only admin who can still open the Portal — give someone else admin access first, or ask Aidapt',
+            'That is the only admin who can still open the Hub — give someone else admin access first, or ask Aidapt',
             409,
             'LAST_PORTAL_ADMIN',
           );

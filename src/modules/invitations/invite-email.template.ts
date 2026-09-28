@@ -1,5 +1,5 @@
 /**
- * The Partner Portal invite copy. n8n delivers this; we own the wording so a
+ * The Aidapt Hub invite copy. n8n delivers this; we own the wording so a
  * rewrite does not require editing the workflow.
  *
  * Merge fields match the "Email 2, rewritten" brief. The non-retainer access
@@ -7,12 +7,12 @@
  * sentence when `accessEndDate` is set.
  */
 
-export const INVITE_EMAIL_SUBJECT = 'Your Aidapt Partner Portal login';
+export const INVITE_EMAIL_SUBJECT = 'Your login for The Aidapt Hub';
 export const INVITE_EMAIL_PREHEADER =
   'Set your password, see what you have access to, clear Level 1.';
 
 /** Third product in the suite (Support Desk and Academy are named in the copy). */
-export const DEFAULT_APP_3_NAME = 'Partner Portal';
+export const DEFAULT_APP_3_NAME = 'The Aidapt Hub';
 export const DEFAULT_APP_3_LINE =
   'Your projects, sprints, monthly reports, and the work itself.';
 
@@ -66,7 +66,7 @@ export function renderInviteEmail(vars: InviteEmailVars): RenderedInviteEmail {
   const text = [
     `Hi ${vars.firstName},`,
     '',
-    'You have a seat on the Aidapt Partner Portal. It is where your work with Aidapt lives, and where you learn to run it yourself.',
+    'You have a seat on The Aidapt Hub. It is where your work with Aidapt lives, and where you learn to run it yourself.',
     '',
     'Get in',
     vars.portalUrl,
@@ -124,7 +124,7 @@ function renderHtml(vars: InviteEmailVars, accessLine: string, signOffTitle: str
 <div style="display:none;max-height:0;overflow:hidden;opacity:0;">${preheader}</div>
 <div style="max-width:560px;margin:0 auto;padding:24px 16px;">
   <p>Hi ${firstName},</p>
-  <p>You have a seat on the Aidapt Partner Portal. It is where your work with Aidapt lives, and where you learn to run it yourself.</p>
+  <p>You have a seat on The Aidapt Hub. It is where your work with Aidapt lives, and where you learn to run it yourself.</p>
   <p><strong>Get in</strong><br>
     <a href="${portalUrl}">${portalUrl}</a><br>
     Username: ${loginEmail}<br>
