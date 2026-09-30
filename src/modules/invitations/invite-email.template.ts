@@ -49,7 +49,7 @@ export type RenderedInviteEmail = {
  */
 export function guessFirstName(email: string): string {
   const local = (email.split('@')[0] ?? '').trim();
-  const token = local.split(/[._+\-]/).find((part) => part.length >= 2);
+  const token = local.split(/[._+-]/).find((part) => part.length >= 2);
   if (!token) return 'there';
   return token.charAt(0)!.toUpperCase() + token.slice(1).toLowerCase();
 }
