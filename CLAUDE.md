@@ -70,6 +70,13 @@ email is registered, to avoid leaking account existence.
   per-task `/internal/sync/task`, HMAC webhook (unused — see integration below).
   - [x] **Project visibility** — admin discover/toggle which lists show in Portal;
     `task_cache.client_visible` driven by the per-project flag.
+    New lists land **visible** (changed 2026-09-30; was hidden, which left new
+    TCC projects silently missing). An admin-set hide survives every re-sync. `upsertProject`
+    returns the live flag and the sync uses it for the list's tasks — never a
+    per-run cache, which missed lists created mid-run. The toggle (`PATCH /admin/clients/:id/projects/:listId`)
+    flips the mapping AND the list's cached phases/subtasks in one txn, so a project
+    shows complete immediately rather than after the next hourly sync. Surfaced as a
+    per-project switch in the "Shown" column of Admin → Sync (platform admins only).
 - [x] **4. Portal client reads** — `/dashboard`, `/projects`, `/sprint/active`,
   `/onboarding`, `/pod`, `/notifications` (+read). LMS tile computed live from the
   LMS team's schema (domain join). `PUT /admin/clients/:id/clickup-mapping` added.

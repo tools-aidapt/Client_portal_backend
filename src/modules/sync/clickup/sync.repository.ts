@@ -1,4 +1,4 @@
-import { pool, type Queryable } from '@infra/db/pool.js';
+import { pool, withTransaction, type Queryable } from '@infra/db/pool.js';
 import type { TaskBucket, TaskCacheUpsert } from './mapper.js';
 import type { ReportDocUpsert, ReportSectionUpsert } from './report-mapper.js';
 import type { UseCaseUpsert } from './usecase-mapper.js';
@@ -80,17 +80,23 @@ export const syncRepo = {
 
   /**
    * Register (or refresh the name of) a project = a ClickUp list under a client
-   * folder. Preserves the admin-set client_visible flag on conflict.
+   * folder. A NEW project lands client-visible (admins hide it from Admin →
+   * Sync if it shouldn't show); on conflict the admin-set flag is preserved, so
+   * a hidden project stays hidden across syncs. Returns the project's current
+   * flag, which the caller must use for its tasks: a per-run cache loaded
+   * before this insert would not know the new list and file its tasks hidden.
    */
-  async upsertProject(tenantId: string, listId: string, name: string): Promise<void> {
-    await pool.query(
+  async upsertProject(tenantId: string, listId: string, name: string): Promise<boolean> {
+    const { rows } = await pool.query<{ client_visible: boolean }>(
       `insert into portal.clickup_list_mappings
-         (tenant_id, purpose, clickup_list_id, display_label, is_active)
-       values ($1, 'project', $2, $3, true)
+         (tenant_id, purpose, clickup_list_id, display_label, is_active, client_visible)
+       values ($1, 'project', $2, $3, true, true)
        on conflict (tenant_id, clickup_list_id)
-       do update set display_label = excluded.display_label, is_active = true`,
+       do update set display_label = excluded.display_label, is_active = true
+       returning client_visible`,
       [tenantId, listId, name],
     );
+    return rows[0]!.client_visible;
   },
 
   /**
@@ -132,14 +138,27 @@ export const syncRepo = {
     }>;
   },
 
-  /** Toggle a project's portal visibility. Returns false if no such project. */
+  /**
+   * Toggle a project's portal visibility. Returns false if no such project.
+   * The list's cached tasks (phases and subtasks alike carry the list id) flip
+   * in the same transaction: the sync only re-applies the flag hourly, so
+   * updating the mapping alone showed a newly-visible project with 0 phases.
+   */
   async setProjectVisibility(tenantId: string, listId: string, visible: boolean): Promise<boolean> {
-    const { rowCount } = await pool.query(
-      `update portal.clickup_list_mappings set client_visible = $3
-        where tenant_id = $1 and clickup_list_id = $2 and purpose = 'project'`,
-      [tenantId, listId, visible],
-    );
-    return (rowCount ?? 0) > 0;
+    return withTransaction(async (client) => {
+      const { rowCount } = await client.query(
+        `update portal.clickup_list_mappings set client_visible = $3
+          where tenant_id = $1 and clickup_list_id = $2 and purpose = 'project'`,
+        [tenantId, listId, visible],
+      );
+      if (!rowCount) return false;
+      await client.query(
+        `update portal.task_cache set client_visible = $3
+          where tenant_id = $1 and clickup_list_id = $2 and source = 'delivery'`,
+        [tenantId, listId, visible],
+      );
+      return true;
+    });
   },
 
   /** listId -> client_visible for a tenant's projects (loaded once per sync). */

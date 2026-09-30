@@ -90,7 +90,6 @@ export const syncService = {
     try {
       const client = new ClickUpClient();
       const statusMapCache = new Map<string, Map<string, TaskBucket>>();
-      const visibilityCache = new Map<string, Map<string, boolean>>();
       const groupTenant = new Map<string, string | null>();
       let upserted = 0;
       let skipped = 0;
@@ -100,17 +99,11 @@ export const syncService = {
         if (!sm) sm = statusMapCache.set(tenantId, await syncRepo.getStatusMap(tenantId)).get(tenantId)!;
         return sm;
       };
-      const visibilityFor = async (tenantId: string) => {
-        let vm = visibilityCache.get(tenantId);
-        if (!vm) vm = visibilityCache.set(tenantId, await syncRepo.getProjectVisibilityMap(tenantId)).get(tenantId)!;
-        return vm;
-      };
 
       // Ingest one list's tasks for a resolved delivery tenant; client_visible is
-      // driven by the project's admin-set visibility flag.
+      // driven by the project's visibility flag (new projects start visible).
       const ingestProject = async (tenantId: string, listId: string, listName: string) => {
-        await syncRepo.upsertProject(tenantId, listId, listName);
-        const visible = (await visibilityFor(tenantId)).get(listId) ?? false;
+        const visible = await syncRepo.upsertProject(tenantId, listId, listName);
         const statusMap = await statusMapFor(tenantId);
         const tasks = await client.getListTasks(listId);
         for (const task of tasks) {
@@ -219,7 +212,7 @@ export const syncService = {
 
   /**
    * Discover a client's projects from ClickUp (the lists under its Delivery
-   * folder) and register them — hidden by default — so an admin can choose which
+   * folder) and register them — visible by default — so an admin can choose which
    * to show. Does not pull tasks.
    */
   async discoverProjects(tenantId: string): Promise<Array<{ listId: string; name: string }>> {

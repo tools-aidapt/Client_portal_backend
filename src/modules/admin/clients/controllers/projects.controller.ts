@@ -15,7 +15,7 @@ export const projectsController = {
     res.status(StatusCodes.OK).json(ok(projects));
   },
 
-  /** Pull the client's projects from ClickUp (hidden by default) so they can be toggled. */
+  /** Pull the client's projects from ClickUp (new ones visible by default) so they can be toggled. */
   async discover(req: Request, res: Response): Promise<void> {
     const discovered = await syncService.discoverProjects(req.params.id!);
     const projects = await syncRepo.listProjects(req.params.id!);

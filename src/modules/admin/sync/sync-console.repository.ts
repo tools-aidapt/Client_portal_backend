@@ -33,6 +33,7 @@ export interface FolderStat {
 }
 
 export interface ListStat {
+  tenant_id: string;
   tenant_name: string;
   clickup_list_id: string;
   display_label: string | null;
@@ -88,7 +89,8 @@ export const syncConsoleRepo = {
   /** Every mapped list with what the Portal currently holds for it. */
   async listStats(): Promise<ListStat[]> {
     const { rows } = await pool.query<ListStat>(
-      `select t.name as tenant_name,
+      `select m.tenant_id,
+              t.name as tenant_name,
               m.clickup_list_id,
               m.display_label,
               m.purpose::text as purpose,
