@@ -99,6 +99,38 @@ const envSchema = z.object({
   SUPPORT_DESK_BACKEND_URL: z.string().url().optional(),
   // Shared secret with Support Desk's own PORTAL_INTERNAL_SECRET.
   SUPPORT_DESK_INTERNAL_SECRET: z.string().min(1).optional(),
+
+  // Value Ledger (the ROI dashboard, a separate app) embedded on the Hub's
+  // /value-ledger page. All three optional: with any one unset, or no mapping
+  // for the tenant, GET /value-ledger/link answers { configured: false } and the
+  // page shows its "being set up" state instead of failing.
+  VALUE_LEDGER_URL: z.string().url().optional(),
+  // Shared with the ledger, which verifies the HMAC on every /embed link.
+  HUB_EMBED_SECRET: z.string().min(16).optional(),
+  // JSON object: Hub tenant slug -> ledger client key. Malformed JSON fails boot
+  // rather than silently showing every client the empty state.
+  LEDGER_CLIENT_MAP: z
+    .string()
+    .optional()
+    .transform((raw, ctx) => {
+      if (!raw || !raw.trim()) return undefined;
+      let parsedJson: unknown;
+      try {
+        parsedJson = JSON.parse(raw);
+      } catch {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'must be valid JSON' });
+        return z.NEVER;
+      }
+      const map = z.record(z.string().min(1), z.string().min(1)).safeParse(parsedJson);
+      if (!map.success) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'must be a JSON object of tenant slug -> ledger client key strings',
+        });
+        return z.NEVER;
+      }
+      return map.data;
+    }),
 });
 
 const parsed = envSchema.safeParse(process.env);

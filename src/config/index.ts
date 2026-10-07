@@ -70,6 +70,11 @@ export const config = {
     supportDeskBackendUrl: env.SUPPORT_DESK_BACKEND_URL,
     supportDeskInternalSecret: env.SUPPORT_DESK_INTERNAL_SECRET,
   },
+  valueLedger: {
+    url: env.VALUE_LEDGER_URL,
+    embedSecret: env.HUB_EMBED_SECRET,
+    clientMap: env.LEDGER_CLIENT_MAP,
+  },
 } as const;
 
 export type Config = typeof config;

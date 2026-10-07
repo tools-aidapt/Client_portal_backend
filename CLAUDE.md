@@ -415,6 +415,13 @@ email is registered, to avoid leaking account existence.
 `tokens.ts` stamps `platform_admin`/`tenant_roles` claims at sign-in (replacing the
 never-enabled Supabase hook). Endpoints: `/auth/register|login|refresh|logout|logout-all|me`.
 
+**Value Ledger embed (2026-10-07, branch `feature/value-ledger`):** `GET /value-ledger/link`
+(`member`) returns a 5 minute HMAC-signed URL to the tenant's page on the separate
+ROI dashboard app, which the Hub's `/value-ledger` page iframes. No DB changes: the
+tenant slug is mapped to a ledger client key by `LEDGER_CLIENT_MAP` (env JSON). With
+`VALUE_LEDGER_URL`/`HUB_EMBED_SECRET`/`LEDGER_CLIENT_MAP` unset or no mapping, it
+answers `{ configured: false }`. Unit-tested in `tests/unit/value-ledger.test.ts`.
+
 ## Integration status (external side effects)
 Sync flow chosen: **ClickUp → n8n (cloud, hourly) → `POST /internal/sync/all`**.
 The HMAC `/webhooks/clickup` route exists but is **unused** in this model.
