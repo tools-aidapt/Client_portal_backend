@@ -233,6 +233,11 @@ All of these are scoped to the tenant in `:id`, and a cycle belonging to another
 client is a `404`. **At most one cycle can be open per tenant** (enforced by a
 partial unique index, migration `0027`).
 
+## Value Ledger
+| Method | Path | Role | Returns |
+|---|---|---|---|
+| GET | `/value-ledger/link` | member | `{ configured: false }` or `{ configured: true, url, expiresAt }`. `url` is the tenant's ledger embed, `{VALUE_LEDGER_URL}/embed/{clientKey}?exp={unix}&sig={hex}`, where `sig` is HMAC-SHA256 of `${clientKey}.${exp}` with `HUB_EMBED_SECRET`. Valid for 5 minutes; fetch a fresh one rather than reusing it. `Cache-Control: no-store`. The client key comes only from `LEDGER_CLIENT_MAP` keyed by the resolved tenant's slug, so the browser cannot choose it. `configured: false` when any of the three env vars is unset or the tenant has no mapping |
+
 ## Not for the frontend
 `/internal/*` and `/webhooks/*` are service-role endpoints (cron / n8n / ClickUp),
 guarded by a shared secret — never call them from the browser.

@@ -11,6 +11,7 @@ import { wishlistRoutes, votingRoutes } from '@modules/wishlist/wishlist.routes.
 import { reportsRoutes } from '@modules/reports/reports.routes.js';
 import { useCasesRoutes } from '@modules/usecases/usecases.routes.js';
 import { teamRoutes } from '@modules/team/team.routes.js';
+import { valueLedgerRoutes } from '@modules/value-ledger/value-ledger.routes.js';
 import {
   adminAutomationRoutes,
   automationHealthRoutes,
@@ -36,6 +37,8 @@ apiRouter.use('/automations', automationHealthRoutes);
 apiRouter.use('/usecases', useCasesRoutes);
 // A client managing its own people (read-only; invites go via /invitations).
 apiRouter.use('/team', teamRoutes);
+// Signed embed link for the client's Value Ledger (the ROI dashboard app).
+apiRouter.use('/value-ledger', valueLedgerRoutes);
 
 // Admin — client lifecycle & onboarding (design §10.2)
 apiRouter.use('/admin/clients', adminClientsRoutes);
