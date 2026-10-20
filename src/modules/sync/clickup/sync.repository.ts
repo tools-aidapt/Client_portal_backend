@@ -311,9 +311,9 @@ export const syncRepo = {
          (tenant_id, clickup_task_id, source, sprint_id, clickup_list_id, list_name,
           name, display_title, status_raw, bucket, rag, progress_pct, type_of_work,
           parent_task_id, client_visible, assignee_names, start_date, due_date,
-          closed_at, url, synced_at)
+          closed_at, url, clickup_updated_at, synced_at)
        values ($1,$2,$3::portal.task_source,$4,$5,$6,$7,$8,$9,$10::portal.task_bucket,
-               $11::portal.rag_status,$12,$13,$14,$15,$16::text[],$17,$18,$19,$20, now())
+               $11::portal.rag_status,$12,$13,$14,$15,$16::text[],$17,$18,$19,$20,$21, now())
        on conflict (clickup_task_id) do update set
          tenant_id = excluded.tenant_id,
          source = excluded.source,
@@ -334,11 +334,13 @@ export const syncRepo = {
          due_date = excluded.due_date,
          closed_at = excluded.closed_at,
          url = excluded.url,
+         clickup_updated_at = excluded.clickup_updated_at,
          synced_at = now()`,
       [
         t.tenantId, t.clickupTaskId, t.source, t.sprintId, t.clickupListId, t.listName,
         t.name, t.displayTitle, t.statusRaw, t.bucket, t.rag, t.progressPct, t.typeOfWork,
         t.parentTaskId, t.clientVisible, t.assigneeNames, t.startDate, t.dueDate, t.closedAt, t.url,
+        t.clickupUpdatedAt,
       ],
     );
   },

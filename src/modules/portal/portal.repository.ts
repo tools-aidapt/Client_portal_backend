@@ -13,7 +13,7 @@ import { logger } from '@infra/logger/index.js';
 // a 500 for every tenant. Qualifying here keeps the three callers in step.
 const TASK_COLUMNS = `tc.clickup_task_id, tc.clickup_list_id, tc.parent_task_id, tc.name,
   tc.bucket, tc.status_raw, tc.rag, tc.progress_pct, tc.type_of_work, tc.assignee_names,
-  tc.start_date, tc.due_date, tc.url, tc.list_name`;
+  tc.start_date, tc.due_date, tc.url, tc.list_name, tc.clickup_updated_at`;
 
 /** Run a summary query owned by another team; return null if its table is absent. */
 async function summaryOrNull(
@@ -100,8 +100,15 @@ export const portalRepo = {
     for (const t of tasks) {
       if (!t.clickup_list_id || !isPhase(t)) continue;
       const subtasks = descendants(t.clickup_task_id);
+      // A phase counts as touched when it or any subtask was edited, so take the latest.
+      const lastUpdated = [t, ...subtasks]
+        .map((x) => x.clickup_updated_at as Date | string | null)
+        .filter((v): v is Date | string => v != null)
+        .map((v) => new Date(v).getTime())
+        .reduce<number | null>((max, ms) => (max === null || ms > max ? ms : max), null);
       const phase = {
         ...t,
+        last_updated_at: lastUpdated === null ? null : new Date(lastUpdated).toISOString(),
         subtasks,
         subtask_total: subtasks.length,
         subtask_done: subtasks.filter((s) => s.bucket === 'delivered').length,

@@ -33,6 +33,8 @@ export interface ClickUpTask {
   parent?: string | null;
   status?: { status?: string };
   date_created?: string;
+  /** Last edit in ClickUp, epoch ms as a string. */
+  date_updated?: string | null;
   start_date?: string | null;
   due_date?: string | null;
   date_closed?: string | null;
