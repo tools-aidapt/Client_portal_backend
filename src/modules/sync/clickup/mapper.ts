@@ -78,6 +78,7 @@ export interface TaskCacheUpsert {
   startDate: string | null; // YYYY-MM-DD
   dueDate: string | null; // YYYY-MM-DD
   closedAt: string | null; // ISO timestamp
+  clickupUpdatedAt: string | null; // ISO timestamp of the last edit in ClickUp
   url: string | null;
 }
 
@@ -202,6 +203,7 @@ export function mapClickUpTask(
     startDate: toDate(task.start_date),
     dueDate: toDate(task.due_date),
     closedAt: toTimestamp(task.date_closed),
+    clickupUpdatedAt: toTimestamp(task.date_updated),
     url: task.url ?? null,
   };
 }
