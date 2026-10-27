@@ -112,6 +112,7 @@ export const syncService = {
           await syncRepo.upsertTask(row);
           upserted++;
         }
+        await syncRepo.pruneListTasks(listId, tasks.map((t) => t.id));
         emit(ctx, {
           phase: 'store',
           message: `${listName} — ${tasks.length} task${tasks.length === 1 ? '' : 's'}${visible ? '' : ' (hidden)'}`,
@@ -138,6 +139,7 @@ export const syncService = {
           await syncRepo.upsertTask(mapClickUpTask(task, { tenantId, source: 'sprint', statusMap, sprintId }));
           upserted++;
         }
+        await syncRepo.pruneListTasks(listId, tasks.map((t) => t.id));
         emit(ctx, {
           phase: 'store',
           message: `Sprint list — ${tasks.length} task${tasks.length === 1 ? '' : 's'} read, ${skipped} unrouted so far`,
@@ -171,6 +173,11 @@ export const syncService = {
         await ingestProject(tenantId, list.id, list.name);
       };
 
+      // Every list the walk saw, and the tenants whose client folder it walked:
+      // what the archived-list retirement below compares against.
+      const seenListIds = new Set<string>();
+      const walkedTenantIds = new Set<string>();
+
       emit(ctx, { phase: 'scan', message: `Walking ${spaceIds.length} ClickUp space(s)` });
 
       for (const spaceId of spaceIds) {
@@ -181,6 +188,7 @@ export const syncService = {
         });
 
         for (const list of listing.folderless) {
+          seenListIds.add(list.id);
           await handleList({ id: list.id, name: list.name }, null);
         }
         for (const folder of listing.folders) {
@@ -190,9 +198,24 @@ export const syncService = {
             phase: 'scan',
             message: `Folder "${folder.name}" — ${folder.lists.length} list(s)${folderTenantId ? '' : ' (no tenant mapped)'}`,
           });
+          if (folderTenantId && folder.lists.length > 0) walkedTenantIds.add(folderTenantId);
           for (const list of folder.lists) {
+            seenListIds.add(list.id);
             await handleList({ id: list.id, name: list.name }, folderTenantId);
           }
+        }
+      }
+
+      // An archived list drops out of the space listing, so the walk never
+      // visits it again and its project mapping and cached tasks would linger
+      // on the Projects page. Retire a walked client's projects whose list the
+      // walk did not see anywhere. Only clients whose folder was actually
+      // walked, so a list mapped from outside the synced spaces is left alone.
+      for (const tenantId of walkedTenantIds) {
+        for (const project of await syncRepo.listProjects(tenantId)) {
+          if (seenListIds.has(project.clickup_list_id)) continue;
+          await syncRepo.retireProject(tenantId, project.clickup_list_id);
+          emit(ctx, { phase: 'store', message: `Retired archived project list ${project.display_label ?? project.clickup_list_id}` });
         }
       }
 
@@ -237,6 +260,7 @@ export const syncService = {
       row.clientVisible = visible;
       await syncRepo.upsertTask(row);
     }
+    await syncRepo.pruneListTasks(listId, tasks.map((t) => t.id));
     return { upserted: tasks.length, visible };
   },
 
@@ -250,6 +274,7 @@ export const syncService = {
       for (const listId of listIds) {
         const tasks = await client.getListTasks(listId);
         upserted += await this.ingestTasksForTenant(tenantId, tasks, 'delivery');
+        await syncRepo.pruneListTasks(listId, tasks.map((t) => t.id));
       }
       await syncRepo.finishRun(runId, 'success', upserted);
       return { runId, upserted, skipped: 0, status: 'success' };
@@ -294,6 +319,7 @@ export const syncService = {
           await this.ingestTasksForTenant(tenantId, [task], 'sprint', sprint.id);
           upserted++;
         }
+        await syncRepo.pruneListTasks(sprint.clickup_list_id, tasks.map((t) => t.id));
       }
       const status = skipped > 0 ? 'partial' : 'success';
       await syncRepo.finishRun(runId, status, upserted, skipped ? `${skipped} unrouted tasks` : undefined);
@@ -370,6 +396,9 @@ export const syncService = {
         await wishlistRepo.upsertFromClickUp({ ...row, submittedBy });
         upserted++;
       }
+      // An empty list is far likelier a bad fetch than every request archived
+      // at once, so never clear the whole board on one.
+      if (tasks.length > 0) await wishlistRepo.archiveMissingFromClickUp(tasks.map((t) => t.id));
 
       const status = skipped > 0 ? 'partial' : 'success';
       await syncRepo.finishRun(runId, status, upserted, skipped ? `${skipped} unrouted/hidden items` : undefined);
@@ -420,6 +449,7 @@ export const syncService = {
         await syncRepo.upsertTask(row);
         upserted++;
       }
+      await syncRepo.pruneListTasks(listId, tasks.map((t) => t.id));
 
       const status = skipped > 0 ? 'partial' : 'success';
       await syncRepo.finishRun(runId, status, upserted, skipped ? `${skipped} unrouted requests` : undefined);
@@ -627,6 +657,7 @@ export const syncService = {
       const lists = await client.getFolderLists(folderId);
       let upserted = 0;
       let skipped = 0;
+      const liveTaskIds: string[] = [];
 
       emit(ctx, { phase: 'scan', message: `Case Study Library — ${lists.length} list(s)` });
 
@@ -634,6 +665,7 @@ export const syncService = {
         const source = shortListName(list.name);
         const tasks = await client.getListTasks(list.id);
         for (const task of tasks) {
+          liveTaskIds.push(task.id);
           const row = mapCaseStudyTask(task, source);
           await syncRepo.upsertUseCase(row);
           if (row.isPublished) upserted++;
@@ -646,6 +678,10 @@ export const syncService = {
           totalUpserted: upserted,
         });
       }
+
+      // An empty walk means the folder listing came back wrong, not that the
+      // whole library was archived: never withdraw every study on that.
+      if (liveTaskIds.length > 0) await syncRepo.unpublishMissingUseCases(liveTaskIds);
 
       // Every task is stored either way; `skipped` counts those held back from
       // clients (explicitly NDA-required / Internal-only in ClickUp), which is a
@@ -713,6 +749,12 @@ export const syncService = {
   ): Promise<{ taskId: string; tenantId: string; source: TaskSource } | { taskId: string; skipped: string }> {
     const client = new ClickUpClient();
     const task = await client.getTask(taskId);
+    // Archiving is itself a task update, so the webhook fires for it. Drop the
+    // cached row rather than upsert it, or it counts until the next full sync.
+    if (task.archived) {
+      await syncRepo.deleteTask(taskId);
+      return { taskId, skipped: 'archived' };
+    }
     const listId = task.list?.id ?? null;
 
     // A task on an active sprint list routes by Client Group; otherwise the

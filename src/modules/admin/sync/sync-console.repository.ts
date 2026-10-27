@@ -111,7 +111,8 @@ export const syncConsoleRepo = {
     const { rows } = await pool.query<Record<string, number>>(
       `select (select count(*)::int from portal.task_cache)            as tasks,
               (select count(*)::int from portal.use_cases)             as use_cases,
-              (select count(*)::int from portal.wishlist_items)        as wishlist_items,
+              (select count(*)::int from portal.wishlist_items
+                where archived_at is null)                             as wishlist_items,
               (select count(*)::int from portal.reports)               as reports,
               (select count(*)::int from portal.clickup_list_mappings
                 where is_active)                                       as active_lists,

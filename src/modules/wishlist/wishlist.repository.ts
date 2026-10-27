@@ -104,6 +104,7 @@ export const wishlistRepo = {
               ($3::uuid is not null and wi.state = 'candidate') as can_vote
          from portal.wishlist_items wi
         where wi.tenant_id = $1
+          and wi.archived_at is null
           and ($5::portal.wishlist_state is null or wi.state = $5::portal.wishlist_state)
         -- Shipped items sink rather than disappear: "you asked for this, we
         -- shipped it" is the whole point of the wishlist -> onboarding loop.
@@ -175,6 +176,8 @@ export const wishlistRepo = {
          -- Never clear an attribution we already made: a form email that stops
          -- resolving (the person left the tenant) shouldn't orphan the request.
          submitted_by      = coalesce(excluded.submitted_by, portal.wishlist_items.submitted_by),
+         -- Returned by ClickUp again, so it was unarchived: back on the board.
+         archived_at       = null,
          synced_at         = now()`,
       [
         input.tenantId, input.clickupTaskId, input.title, input.createdAt,
@@ -183,6 +186,21 @@ export const wishlistRepo = {
         d.bodyMd, d.department, input.submittedBy,
       ],
     );
+  },
+
+  /**
+   * Take synced requests the wishlist list no longer returns (archived or
+   * deleted in ClickUp) off the board. Marked rather than deleted, see
+   * migration 0043. Pass every task id from a complete fetch of the list.
+   */
+  async archiveMissingFromClickUp(liveTaskIds: string[]): Promise<number> {
+    const { rowCount } = await pool.query(
+      `update portal.wishlist_items set archived_at = now()
+        where clickup_task_id is not null and archived_at is null
+          and clickup_task_id <> all($1::text[])`,
+      [liveTaskIds],
+    );
+    return rowCount ?? 0;
   },
 
   /**
@@ -195,7 +213,7 @@ export const wishlistRepo = {
     itemId: string,
   ): Promise<{ cycleId: string; state: string }> {
     const { rows: itemRows } = await client.query<{ tenant_id: string; state: string }>(
-      `select tenant_id, state from portal.wishlist_items where id = $1`,
+      `select tenant_id, state from portal.wishlist_items where id = $1 and archived_at is null`,
       [itemId],
     );
     const item = itemRows[0];

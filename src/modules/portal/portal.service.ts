@@ -3,13 +3,17 @@ import { portalRepo } from './portal.repository.js';
 
 type Bucket = 'delivered' | 'in_progress' | 'upcoming';
 
-/** A project's overall status derived from its tasks: worst-case wins (any in-progress task beats all-delivered). */
+/**
+ * A project's overall status derived from its phases. Delivered only when every
+ * phase is; to be planned only when none has started. Anything in between is in
+ * progress: the old "any unstarted phase wins" rule put a project with 12 of 13
+ * phases delivered under "To be planned".
+ */
 function projectStatus(tasks: Array<Record<string, unknown>>): Bucket {
   if (tasks.length === 0) return 'upcoming';
   const buckets = new Set(tasks.map((t) => (t.bucket as Bucket) ?? 'upcoming'));
-  if (buckets.has('in_progress')) return 'in_progress';
-  if (buckets.has('upcoming')) return 'upcoming';
-  return 'delivered';
+  if (buckets.size > 1) return 'in_progress';
+  return buckets.has('delivered') ? 'delivered' : buckets.has('in_progress') ? 'in_progress' : 'upcoming';
 }
 
 /**

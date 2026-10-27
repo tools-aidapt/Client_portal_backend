@@ -31,6 +31,11 @@ export interface ClickUpTask {
   markdown_description?: string | null;
   /** Parent task id when this card is a subtask; null on top-level tasks. */
   parent?: string | null;
+  /**
+   * True once the task is archived. `/list/:id/task` leaves archived tasks out
+   * entirely, so this only ever shows up on a single-task `/task/:id` fetch.
+   */
+  archived?: boolean;
   status?: { status?: string };
   date_created?: string;
   /** Last edit in ClickUp, epoch ms as a string. */

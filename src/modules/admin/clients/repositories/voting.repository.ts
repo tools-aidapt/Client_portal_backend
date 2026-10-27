@@ -55,7 +55,7 @@ export const adminVotingRepo = {
               (select count(*)::int from portal.wishlist_votes v
                 where v.cycle_id = $2 and v.item_id = wi.id) as votes
          from portal.wishlist_items wi
-        where wi.tenant_id = $1
+        where wi.tenant_id = $1 and wi.archived_at is null
         order by votes desc, wi.created_at asc`,
       [tenantId, cycleId],
     );

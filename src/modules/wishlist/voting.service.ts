@@ -123,7 +123,7 @@ export const votingService = {
         `select v.item_id, wi.title, count(*)::int votes
            from portal.wishlist_votes v
            join portal.wishlist_items wi on wi.id = v.item_id
-          where v.cycle_id = $1
+          where v.cycle_id = $1 and wi.archived_at is null
           group by v.item_id, wi.title, wi.created_at
           order by votes desc, wi.created_at asc
           limit 1`,
