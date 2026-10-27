@@ -119,6 +119,42 @@ export const syncRepo = {
     );
   },
 
+  /**
+   * Drop cached tasks a list no longer returns. ClickUp's list endpoint leaves
+   * out archived and deleted tasks, and the upserts only ever add, so without
+   * this an archived task stays in task_cache and keeps counting on every page.
+   * Pass the ids of a complete, successful fetch of that list — every task it
+   * returned, routed or not — never a partial page.
+   */
+  async pruneListTasks(listId: string, liveTaskIds: string[]): Promise<number> {
+    const { rowCount } = await pool.query(
+      `delete from portal.task_cache
+        where clickup_list_id = $1 and clickup_task_id <> all($2::text[])`,
+      [listId, liveTaskIds],
+    );
+    return rowCount ?? 0;
+  },
+
+  /** Drop one cached task: the webhook path, when ClickUp reports it archived. */
+  async deleteTask(clickupTaskId: string): Promise<void> {
+    await pool.query(`delete from portal.task_cache where clickup_task_id = $1`, [clickupTaskId]);
+  },
+
+  /**
+   * Withdraw synced case studies the library no longer returns (archived or
+   * deleted in ClickUp). Unpublished rather than deleted, the same way an
+   * NDA-required study is held back, so nothing that links to the slug breaks.
+   */
+  async unpublishMissingUseCases(liveTaskIds: string[]): Promise<number> {
+    const { rowCount } = await pool.query(
+      `update portal.use_cases set is_published = false, updated_at = now()
+        where clickup_task_id is not null and is_published
+          and clickup_task_id <> all($1::text[])`,
+      [liveTaskIds],
+    );
+    return rowCount ?? 0;
+  },
+
   /** All projects for a tenant (for the admin projects screen). */
   async listProjects(
     tenantId: string,

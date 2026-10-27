@@ -85,7 +85,7 @@ email is registered, to avoid leaking account existence.
   `POST /internal/voting/close-cycle` (winner→prioritised, notify, reopen).
   - [x] **Requests are authored in ClickUp, never in the Portal.** The Wishlist page's
     "Submit a request" links out to `WISHLIST_FORM_URL`
-    (`https://processonboarding.aidaptnow.com/wishlist/`, same pattern as
+    (the Formly standard form `https://aidapt-forms.onrender.com/f/wishlist-w0eq8`, same pattern as
     `ONBOARDING_FORM_URL`); the form writes to the shared list and the item appears at
     the next `POST /internal/sync/wishlist`. `POST /wishlist` still exists but the UI
     doesn't use it, so every request enters through one pipeline.

@@ -75,7 +75,7 @@ export const taskLinksRepo = {
          from portal.wishlist_items wi
          left join portal.task_cache tc
            on tc.source_wishlist_item_id = wi.id and tc.tenant_id = wi.tenant_id
-        where wi.tenant_id = $1
+        where wi.tenant_id = $1 and wi.archived_at is null
         order by wi.created_at desc`,
       [tenantId],
     );
