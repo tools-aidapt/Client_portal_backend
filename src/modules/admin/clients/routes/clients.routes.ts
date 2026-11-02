@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '@common/utils/async-handler.js';
 import { authenticate } from '@/api/middlewares/authenticate.js';
-import { requirePlatformAdmin } from '@/api/middlewares/authorize.js';
+import { requireAidaptStaff, requirePlatformAdmin } from '@/api/middlewares/authorize.js';
 import { validate } from '@/api/middlewares/validate.js';
 import { z } from 'zod';
 import { clientsController } from '../controllers/clients.controller.js';
@@ -156,13 +156,31 @@ adminClientsRoutes.patch(
   asyncHandler(projectsController.setVisibility),
 );
 
-// --- Manual task status (Hub-only; never written back to ClickUp) ---
+// --- Manual status (Hub-only; never written back to ClickUp) ---
+// Aidapt staff only (platform admin on an aidapt.co login), stricter than the
+// router-wide platform-admin gate: these change what a client reads about its
+// own delivery.
+
+const statusBody = z.object({ status_key: z.string().min(1).max(64).nullable() });
+
+// A whole project. `status_key: null` clears the pin so it is derived from its
+// phases again.
+adminClientsRoutes.patch(
+  '/:id/projects/:listId/status',
+  requireAidaptStaff,
+  validate({
+    params: tenantIdParam.extend({ listId: z.string().min(1) }),
+    body: statusBody,
+  }),
+  asyncHandler(taskStatusController.setProjectStatus),
+);
 
 // `:taskId` is the ClickUp task id, same as the wishlist-source route. Works
 // on phases and subtasks alike — both are task_cache rows. `status_key: null`
 // clears the pin so the task follows ClickUp again.
 adminClientsRoutes.patch(
   '/:id/tasks/:taskId/status',
+  requireAidaptStaff,
   validate({
     params: tenantIdParam.extend({ taskId: z.string().min(1) }),
     body: z.object({ status_key: z.string().min(1).max(64).nullable() }),

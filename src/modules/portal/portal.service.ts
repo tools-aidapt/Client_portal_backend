@@ -44,36 +44,49 @@ function projectStatusKey(
 }
 
 /**
- * A project's completion, averaged across its phases. Phase percentages come
- * from ClickUp's own "Progress %" roll-up, so this is an average of averages —
- * good enough for a headline bar, and it degrades to null (not a misleading 0)
- * for a project whose phases carry no progress at all.
+ * A project's completion: the average of its phases' `completion_pct`, which
+ * the repository derives from Hub statuses (see `completionOf`). Null for a
+ * project with no phases, so the UI shows a dash rather than a misleading 0.
  */
 function projectProgress(phases: Array<Record<string, unknown>>): number | null {
   const pcts = phases
-    .map((p) => Number(p.progress_pct))
+    .map((p) => Number(p.completion_pct))
     .filter((n) => Number.isFinite(n));
   if (pcts.length === 0) return null;
   return Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length);
 }
 
 export const portalService = {
+  /**
+   * Projects with their phases, plus the status catalogue so the client can
+   * label filters and the staff status menu without a second request.
+   *
+   * A project's status is staff's manual pin when set, otherwise derived from
+   * its phases. `status` (the bucket, for tabs and counts) follows whichever
+   * wins, so a project pinned to Complete moves to the Done tab.
+   */
   async projects(tenantId: string) {
     const [projects, catalogue] = await Promise.all([
       portalRepo.projects(tenantId),
       portalRepo.taskStatuses(),
     ]);
+    const byKey = new Map(catalogue.map((c) => [c.key, c]));
     return {
       total: projects.length,
+      statuses: catalogue,
       projects: projects.map((p) => {
-        const fine = projectStatusKey(p.tasks, catalogue);
+        const pinned = p.status_override_key ? (byKey.get(p.status_override_key) ?? null) : null;
+        const fine = pinned ?? projectStatusKey(p.tasks, catalogue);
         return {
           clickup_list_id: p.clickup_list_id,
           name: p.name,
-          status: projectStatus(p.tasks),
+          status: pinned ? (pinned.bucket as Bucket) : projectStatus(p.tasks),
           status_key: fine?.key ?? null,
           status_label: fine?.label ?? null,
           status_tone: fine?.tone ?? null,
+          status_overridden: pinned !== null,
+          status_override_at: pinned ? p.status_override_at : null,
+          status_override_by_name: pinned ? p.status_override_by_name : null,
           progress_pct: projectProgress(p.tasks),
           phase_total: p.tasks.length,
           phase_done: p.tasks.filter((t) => t.bucket === 'delivered').length,

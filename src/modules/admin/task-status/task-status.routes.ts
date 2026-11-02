@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '@common/utils/async-handler.js';
 import { authenticate } from '@/api/middlewares/authenticate.js';
-import { requirePlatformAdmin } from '@/api/middlewares/authorize.js';
+import { requireAidaptStaff } from '@/api/middlewares/authorize.js';
 import { taskStatusController } from '@modules/admin/clients/controllers/task-status.controller.js';
 
 /**
@@ -15,6 +15,6 @@ import { taskStatusController } from '@modules/admin/clients/controllers/task-st
  */
 export const taskStatusRoutes = Router();
 
-taskStatusRoutes.use(authenticate, requirePlatformAdmin);
+taskStatusRoutes.use(authenticate, requireAidaptStaff);
 
 taskStatusRoutes.get('/', asyncHandler(taskStatusController.catalogue));

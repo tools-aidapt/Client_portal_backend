@@ -26,6 +26,31 @@ export const requirePlatformAdmin: RequestHandler = asyncHandler(async (req, _re
 });
 
 /**
+ * Requires an Aidapt staff member: a platform admin whose sign-in email is on
+ * aidapt.co. Stricter than `requirePlatformAdmin` on purpose, and the same rule
+ * as the frontend's `isAidaptStaff`. Used where a write changes what CLIENTS
+ * see about their own delivery (manual status changes), which must never be
+ * possible for anyone outside Aidapt even if a client account were ever
+ * flagged as a platform admin by mistake. Read from the database on every
+ * call, for the same reason as `requirePlatformAdmin`.
+ */
+export const requireAidaptStaff: RequestHandler = asyncHandler(async (req, _res, next) => {
+  if (!req.auth) throw new UnauthorizedError();
+
+  const { rows } = await pool.query<{ is_platform_admin: boolean; email: string | null }>(
+    `select p.is_platform_admin, c.email
+       from core.profiles p
+       left join core.user_credentials c on c.user_id = p.id
+      where p.id = $1`,
+    [req.auth.user.id],
+  );
+
+  const row = rows[0];
+  if (row?.is_platform_admin && row.email?.trim().toLowerCase().endsWith('@aidapt.co')) return next();
+  throw new ForbiddenError('Aidapt staff access required');
+});
+
+/**
  * Guards internal/service endpoints (outbox drain, sync, webhooks) with a shared
  * secret. These are called by cron / n8n / webhooks, never by the browser.
  */

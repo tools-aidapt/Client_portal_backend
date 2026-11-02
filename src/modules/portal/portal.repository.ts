@@ -25,9 +25,11 @@ const TASK_COLUMNS = `tc.clickup_task_id, tc.clickup_list_id, tc.parent_task_id,
   tc.start_date, tc.due_date, tc.url, tc.list_name, tc.clickup_updated_at,
   coalesce(tc.status_override_key, tc.status_key) as status_key,
   ts.label as status_label, ts.tone as status_tone, ts.sort_order as status_sort,
-  (tc.status_override_key is not null) as status_overridden`;
+  (tc.status_override_key is not null) as status_overridden,
+  tc.status_override_at, pov.full_name as status_override_by_name`;
 const TASK_STATUS_JOIN = `left join portal.task_statuses ts
-    on ts.key = coalesce(tc.status_override_key, tc.status_key)`;
+    on ts.key = coalesce(tc.status_override_key, tc.status_key)
+  left join core.profiles pov on pov.id = tc.status_override_by`;
 
 /** Run a summary query owned by another team; return null if its table is absent. */
 async function summaryOrNull(
@@ -60,13 +62,28 @@ export const portalRepo = {
    * A list with no visible tasks yet still appears, empty.
    */
   async projects(tenantId: string): Promise<
-    Array<{ clickup_list_id: string; name: string; tasks: Array<Record<string, unknown>> }>
+    Array<{
+      clickup_list_id: string;
+      name: string;
+      status_override_key: string | null;
+      status_override_at: Date | null;
+      status_override_by_name: string | null;
+      tasks: Array<Record<string, unknown>>;
+    }>
   > {
-    const { rows } = await pool.query<{ clickup_list_id: string; display_label: string | null }>(
-      `select clickup_list_id, display_label
-         from portal.clickup_list_mappings
-        where tenant_id = $1 and purpose = 'project' and client_visible = true and is_active = true
-        order by display_label`,
+    const { rows } = await pool.query<{
+      clickup_list_id: string;
+      display_label: string | null;
+      status_override_key: string | null;
+      status_override_at: Date | null;
+      status_override_by_name: string | null;
+    }>(
+      `select m.clickup_list_id, m.display_label, m.status_override_key, m.status_override_at,
+              p.full_name as status_override_by_name
+         from portal.clickup_list_mappings m
+         left join core.profiles p on p.id = m.status_override_by
+        where m.tenant_id = $1 and m.purpose = 'project' and m.client_visible = true and m.is_active = true
+        order by m.display_label`,
       [tenantId],
     );
 
@@ -105,11 +122,34 @@ export const portalRepo = {
       return String(a.name).localeCompare(String(b.name));
     };
 
+    /** Every descendant of a task, unordered. */
+    const allBelow = (id: string): Row[] =>
+      (childrenByParent.get(id) ?? []).flatMap((c) => [c, ...allBelow(c.clickup_task_id)]);
+
+    /**
+     * Completion from Hub statuses, not ClickUp's "Progress %": the share of a
+     * task's descendants that are delivered, or 0/100 for a leaf. ClickUp's
+     * figure ignores a status set by hand in the Hub, so a phase moved to
+     * Complete here would still read 40%. Deriving it from `bucket` (which
+     * follows the effective status) keeps every number in step with the badges.
+     *
+     * The task itself counts as one more item. Without it a phase sitting in
+     * UAT whose subtasks are all complete read 100%, which tells a client the
+     * work is done before they have signed it off.
+     */
+    const completionOf = (t: Row): number => {
+      const items = [t, ...allBelow(t.clickup_task_id)];
+      return Math.round((items.filter((d) => d.bucket === 'delivered').length / items.length) * 100);
+    };
+
     /** Every descendant of a phase, flattened depth-first and tagged with depth. */
     const descendants = (id: string, depth = 1): Array<Record<string, unknown>> =>
       (childrenByParent.get(id) ?? [])
         .sort(byDueThenName)
-        .flatMap((child) => [{ ...child, depth }, ...descendants(child.clickup_task_id, depth + 1)]);
+        .flatMap((child) => [
+          { ...child, depth, completion_pct: completionOf(child) },
+          ...descendants(child.clickup_task_id, depth + 1),
+        ]);
 
     const phasesByList = new Map<string, Array<Record<string, unknown>>>();
     for (const t of tasks) {
@@ -123,6 +163,7 @@ export const portalRepo = {
         .reduce<number | null>((max, ms) => (max === null || ms > max ? ms : max), null);
       const phase = {
         ...t,
+        completion_pct: completionOf(t),
         last_updated_at: lastUpdated === null ? null : new Date(lastUpdated).toISOString(),
         subtasks,
         subtask_total: subtasks.length,
@@ -136,6 +177,9 @@ export const portalRepo = {
     return rows.map((r) => ({
       clickup_list_id: r.clickup_list_id,
       name: r.display_label ?? r.clickup_list_id,
+      status_override_key: r.status_override_key,
+      status_override_at: r.status_override_at,
+      status_override_by_name: r.status_override_by_name,
       tasks: phasesByList.get(r.clickup_list_id) ?? [],
     }));
   },

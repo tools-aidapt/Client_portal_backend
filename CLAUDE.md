@@ -552,7 +552,11 @@ STUBBED (log-only, need real integration):
   effective status. Platform admins can pin a status by hand
   (`PATCH /admin/clients/:id/tasks/:taskId/status`) — Hub-only, never written to
   ClickUp; `upsertTask` keeps the pin until ClickUp's own status changes, then
-  drops it. The client reads `status_label ?? status_raw`; an unmapped ClickUp
+  drops it. Projects can be pinned too (`PATCH /admin/clients/:id/projects/:listId/status`,
+  migration `0045`, stored on `clickup_list_mappings`; never cleared by the sync).
+  Both writes use `requireAidaptStaff` (platform admin AND aidapt.co login).
+  Completion % (`completion_pct`, project `progress_pct`) is derived from Hub
+  statuses, NOT ClickUp's Progress % field, so manual changes move the numbers. The client reads `status_label ?? status_raw`; an unmapped ClickUp
   status therefore still shows its own words instead of vanishing. Add a new
   ClickUp status by inserting a `task_statuses` row (if it's a genuinely new
   stage) and a global `clickup_status_map` row pointing at it.

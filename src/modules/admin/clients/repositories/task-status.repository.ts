@@ -86,6 +86,33 @@ export const taskStatusRepo = {
     return (await this.get(tenantId, clickupTaskId))!;
   },
 
+  /**
+   * Pin a whole project's status, or clear the pin with `null` so it is derived
+   * from its phases again. Scoped to the tenant's own project lists.
+   */
+  async setProjectOverride(
+    tenantId: string,
+    listId: string,
+    statusKey: string | null,
+    userId: string,
+  ): Promise<{ clickup_list_id: string; status_override_key: string | null }> {
+    if (statusKey) {
+      const { rowCount } = await pool.query(`select 1 from portal.task_statuses where key = $1`, [statusKey]);
+      if (!rowCount) throw new ValidationError(`Unknown status "${statusKey}"`);
+    }
+    const { rows } = await pool.query<{ clickup_list_id: string; status_override_key: string | null }>(
+      `update portal.clickup_list_mappings
+          set status_override_key = $3,
+              status_override_by  = case when $3::text is null then null else $4::uuid end,
+              status_override_at  = case when $3::text is null then null else now() end
+        where tenant_id = $1 and clickup_list_id = $2 and purpose = 'project'
+        returning clickup_list_id, status_override_key`,
+      [tenantId, listId, statusKey, userId],
+    );
+    if (!rows[0]) throw new NotFoundError('Project not found for this client');
+    return rows[0];
+  },
+
   /** Current status state of one cached task, or null if it isn't this tenant's. */
   async get(tenantId: string, clickupTaskId: string): Promise<TaskStatusState | null> {
     const { rows } = await pool.query<TaskStatusState>(
