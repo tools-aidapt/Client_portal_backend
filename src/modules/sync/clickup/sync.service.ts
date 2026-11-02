@@ -13,6 +13,7 @@ import {
   extractClientGroup,
   isProjectList,
   mapClickUpTask,
+  type StatusMap,
   type TaskBucket,
   type TaskSource,
 } from './mapper.js';
@@ -89,7 +90,7 @@ export const syncService = {
     const runId = await syncRepo.startRun('spaces', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
-      const statusMapCache = new Map<string, Map<string, TaskBucket>>();
+      const statusMapCache = new Map<string, StatusMap>();
       const groupTenant = new Map<string, string | null>();
       let upserted = 0;
       let skipped = 0;
@@ -421,7 +422,7 @@ export const syncService = {
     const runId = await syncRepo.startRun('onboarding', null, ctx?.triggeredBy ?? null);
     try {
       const client = new ClickUpClient();
-      const statusMapCache = new Map<string, Map<string, TaskBucket>>();
+      const statusMapCache = new Map<string, StatusMap>();
       const groupTenant = new Map<string, string | null>();
       const tasks = await client.getListTasks(listId);
       let upserted = 0;

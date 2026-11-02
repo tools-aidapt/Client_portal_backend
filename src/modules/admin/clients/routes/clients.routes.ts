@@ -8,6 +8,7 @@ import { clientsController } from '../controllers/clients.controller.js';
 import { membersController } from '../controllers/members.controller.js';
 import { projectsController } from '../controllers/projects.controller.js';
 import { taskLinksController } from '../controllers/task-links.controller.js';
+import { taskStatusController } from '../controllers/task-status.controller.js';
 import { adminVotingController } from '../controllers/voting.controller.js';
 import {
   memberParams,
@@ -153,6 +154,20 @@ adminClientsRoutes.patch(
     body: z.object({ is_visible: z.boolean() }),
   }),
   asyncHandler(projectsController.setVisibility),
+);
+
+// --- Manual task status (Hub-only; never written back to ClickUp) ---
+
+// `:taskId` is the ClickUp task id, same as the wishlist-source route. Works
+// on phases and subtasks alike — both are task_cache rows. `status_key: null`
+// clears the pin so the task follows ClickUp again.
+adminClientsRoutes.patch(
+  '/:id/tasks/:taskId/status',
+  validate({
+    params: tenantIdParam.extend({ taskId: z.string().min(1) }),
+    body: z.object({ status_key: z.string().min(1).max(64).nullable() }),
+  }),
+  asyncHandler(taskStatusController.setStatus),
 );
 
 // --- Wishlist → onboarding origin (which wishlist item a task came from) ---

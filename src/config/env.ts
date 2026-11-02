@@ -57,7 +57,7 @@ const envSchema = z.object({
   // this only needs setting for a non-standard location.
   PUPPETEER_EXECUTABLE_PATH: z.string().min(1).optional(),
 
-  // Frontend base URL used to build invitation links (e.g. https://portal.aidapt.co).
+  // Frontend base URL used to build invitation links (e.g. https://aidapthub.aidaptnow.com).
   PORTAL_BASE_URL: z.string().url().optional(),
   // Public process-intake form the Onboarding page links out to. If unset the
   // portal shows the button disabled rather than linking nowhere.

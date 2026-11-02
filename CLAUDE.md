@@ -545,12 +545,17 @@ STUBBED (log-only, need real integration):
   Deliberately NOT a scheduling system — no slots, availability, or booking
   record. `VITE_CAL_LINK` is unrelated and still one personal Cal.com link shared
   by every client, used only by the Use Cases page's "Talk to your Pod" modal.
-- **Four Kenafric delivery tasks have `bucket = null`** because `in client review`
-  (2) and `internal review` (2) are in neither the global nor Kenafric's
-  `clickup_status_map`. They vanish from `deliveryCounts` and render with no
-  bucket in the Sprint Line — the same silent-disappearance failure as the `live`
-  status before it. Two global rows would fix it; not written yet because the
-  target bucket is a product call.
+- **Task status is three-layered** (migration `0044`): ClickUp's raw status →
+  `clickup_status_map.status_key` → `portal.task_statuses` (the client-facing
+  catalogue: label, badge tone, bucket, order; `in client review` renders as
+  **UAT**). `task_cache.bucket` still feeds every count but is derived from the
+  effective status. Platform admins can pin a status by hand
+  (`PATCH /admin/clients/:id/tasks/:taskId/status`) — Hub-only, never written to
+  ClickUp; `upsertTask` keeps the pin until ClickUp's own status changes, then
+  drops it. The client reads `status_label ?? status_raw`; an unmapped ClickUp
+  status therefore still shows its own words instead of vanishing. Add a new
+  ClickUp status by inserting a `task_statuses` row (if it's a genuinely new
+  stage) and a global `clickup_status_map` row pointing at it.
 - **`POST /internal/voting/close-cycle` is GLOBAL** — it closes due cycles for
   every tenant. Curling it at production to "just fix one client" touches them all.
   `votingService.closeCycle(cycleId)` and the `/admin/clients/:id/voting/cycles/*`

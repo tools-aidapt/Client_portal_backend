@@ -11,9 +11,23 @@ import { logger } from '@infra/logger/index.js';
 // `clickup_list_id`, so the unqualified list made that one query fail outright
 // with `column reference "clickup_list_id" is ambiguous` — GET /onboarding was
 // a 500 for every tenant. Qualifying here keeps the three callers in step.
+//
+// Status reaches the client as three things, all derived from the EFFECTIVE
+// status (a manual Hub override, else the key the sync resolved):
+//   `status_key`   — catalogue key (`client_review`), for logic
+//   `status_label` — the words to show ("UAT"), from portal.task_statuses
+//   `status_tone`  — the badge colour
+// `bucket` stays for counts. `status_raw` is still ClickUp's own wording and
+// is the fallback label for a status the catalogue doesn't know. Every query
+// that selects TASK_COLUMNS must include TASK_STATUS_JOIN.
 const TASK_COLUMNS = `tc.clickup_task_id, tc.clickup_list_id, tc.parent_task_id, tc.name,
   tc.bucket, tc.status_raw, tc.rag, tc.progress_pct, tc.type_of_work, tc.assignee_names,
-  tc.start_date, tc.due_date, tc.url, tc.list_name, tc.clickup_updated_at`;
+  tc.start_date, tc.due_date, tc.url, tc.list_name, tc.clickup_updated_at,
+  coalesce(tc.status_override_key, tc.status_key) as status_key,
+  ts.label as status_label, ts.tone as status_tone, ts.sort_order as status_sort,
+  (tc.status_override_key is not null) as status_overridden`;
+const TASK_STATUS_JOIN = `left join portal.task_statuses ts
+    on ts.key = coalesce(tc.status_override_key, tc.status_key)`;
 
 /** Run a summary query owned by another team; return null if its table is absent. */
 async function summaryOrNull(
@@ -64,6 +78,7 @@ export const portalRepo = {
     const { rows: tasks } = await pool.query<Row>(
       `select ${TASK_COLUMNS}
          from portal.task_cache tc
+         ${TASK_STATUS_JOIN}
         where tc.tenant_id = $1 and tc.source = 'delivery' and tc.client_visible = true
         order by tc.name`,
       [tenantId],
@@ -123,6 +138,16 @@ export const portalRepo = {
       name: r.display_label ?? r.clickup_list_id,
       tasks: phasesByList.get(r.clickup_list_id) ?? [],
     }));
+  },
+
+  /** The status catalogue, in display order, for deriving a project's own status. */
+  async taskStatuses(): Promise<
+    Array<{ key: string; label: string; tone: string; bucket: string; sort_order: number }>
+  > {
+    const { rows } = await pool.query(
+      `select key, label, tone, bucket, sort_order from portal.task_statuses order by sort_order`,
+    );
+    return rows;
   },
 
   async activeSprint(): Promise<{ id: string; name: string; starts_on: string | null; ends_on: string | null } | null> {
@@ -197,6 +222,7 @@ export const portalRepo = {
       const { rows } = await pool.query(
         `select ${TASK_COLUMNS}
            from portal.task_cache tc
+           ${TASK_STATUS_JOIN}
           where tc.tenant_id = $1 and tc.source = 'sprint' and tc.sprint_id = $2
           order by tc.due_date nulls last, tc.name`,
         [tenantId, sprintId],
@@ -208,6 +234,7 @@ export const portalRepo = {
     const { rows } = await pool.query(
       `select ${TASK_COLUMNS}
          from portal.task_cache tc
+         ${TASK_STATUS_JOIN}
         where tc.tenant_id = $1 and tc.source = 'delivery'
           and tc.client_visible = true
           and tc.due_date between $2::date and $3::date
@@ -252,6 +279,7 @@ export const portalRepo = {
            on m.tenant_id = tc.tenant_id and m.clickup_list_id = tc.clickup_list_id
          left join portal.wishlist_items wi
            on wi.id = tc.source_wishlist_item_id and wi.tenant_id = tc.tenant_id
+         ${TASK_STATUS_JOIN}
         where tc.tenant_id = $1 and m.purpose = 'onboarding' and m.is_active = true
           and tc.client_visible = true
         order by tc.due_date nulls last, tc.name`,

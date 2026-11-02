@@ -56,6 +56,20 @@ export type TaskSource = 'delivery' | 'sprint';
 export type TaskBucket = 'delivered' | 'in_progress' | 'upcoming';
 export type Rag = 'green' | 'amber' | 'red';
 
+/**
+ * What one raw ClickUp status resolves to: the client-facing catalogue key
+ * (`portal.task_statuses.key`, e.g. `client_review` which renders as "UAT")
+ * and the coarse bucket that feeds counts. Both come off the same
+ * `clickup_status_map` row, so they can never disagree.
+ */
+export interface StatusMapping {
+  bucket: TaskBucket;
+  statusKey: string;
+}
+
+/** Lowercased raw ClickUp status -> its mapping. */
+export type StatusMap = Map<string, StatusMapping>;
+
 /** Normalized row ready to upsert into portal.task_cache. */
 export interface TaskCacheUpsert {
   tenantId: string;
@@ -68,6 +82,8 @@ export interface TaskCacheUpsert {
   /** Client-facing title parsed out of an intake-form body; null when absent. */
   displayTitle: string | null;
   statusRaw: string | null;
+  /** Catalogue key resolved from `statusRaw`; null when the status is unmapped. */
+  statusKey: string | null;
   bucket: TaskBucket | null;
   rag: Rag | null;
   progressPct: number | null;
@@ -167,19 +183,19 @@ function normalizeRag(value: string | null): Rag | null {
 
 /**
  * Map a ClickUp task to a normalized task_cache row. `statusMap` resolves the
- * raw ClickUp status to a client-facing bucket (lowercased keys).
+ * raw ClickUp status to its catalogue key and bucket (lowercased keys).
  */
 export function mapClickUpTask(
   task: ClickUpTask,
   ctx: {
     tenantId: string;
     source: TaskSource;
-    statusMap: Map<string, TaskBucket>;
+    statusMap: StatusMap;
     sprintId?: string | null;
   },
 ): TaskCacheUpsert {
   const statusRaw = task.status?.status ?? null;
-  const bucket = statusRaw ? (ctx.statusMap.get(statusRaw.toLowerCase()) ?? null) : null;
+  const mapping = statusRaw ? (ctx.statusMap.get(statusRaw.toLowerCase()) ?? null) : null;
 
   return {
     tenantId: ctx.tenantId,
@@ -191,7 +207,8 @@ export function mapClickUpTask(
     name: task.name,
     displayTitle: extractDisplayTitle(task.markdown_description),
     statusRaw,
-    bucket,
+    statusKey: mapping?.statusKey ?? null,
+    bucket: mapping?.bucket ?? null,
     rag: normalizeRag(dropdownName(fieldById(task, FIELD.rag))),
     progressPct: percentField(fieldById(task, FIELD.progress)),
     typeOfWork: dropdownName(fieldById(task, FIELD.typeOfWork)),

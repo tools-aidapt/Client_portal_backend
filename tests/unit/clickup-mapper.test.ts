@@ -5,14 +5,15 @@ import {
   mapClickUpTask,
   extractClientGroup,
   extractDisplayTitle,
-  type TaskBucket,
+  type StatusMap,
 } from '@modules/sync/clickup/mapper.js';
 import type { ClickUpTask } from '@infra/clickup/client.js';
 
-const statusMap = new Map<string, TaskBucket>([
-  ['in progress', 'in_progress'],
-  ['complete', 'delivered'],
-  ['to do', 'upcoming'],
+const statusMap: StatusMap = new Map([
+  ['in progress', { bucket: 'in_progress', statusKey: 'in_progress' }],
+  ['in client review', { bucket: 'in_progress', statusKey: 'client_review' }],
+  ['complete', { bucket: 'delivered', statusKey: 'complete' }],
+  ['to do', { bucket: 'upcoming', statusKey: 'to_do' }],
 ]);
 
 function task(overrides: Partial<ClickUpTask> = {}): ClickUpTask {
@@ -59,6 +60,7 @@ describe('mapClickUpTask', () => {
   it('resolves status to bucket (case-insensitive) and maps fields', () => {
     const row = mapClickUpTask(task(), { tenantId: 'T1', source: 'delivery', statusMap });
     expect(row.bucket).toBe('in_progress');
+    expect(row.statusKey).toBe('in_progress');
     expect(row.clientVisible).toBe(true);
     expect(row.progressPct).toBe(42);
     expect(row.rag).toBe('amber');
@@ -98,13 +100,26 @@ describe('mapClickUpTask', () => {
     expect(row.parentTaskId).toBe('parent123');
   });
 
-  it('leaves bucket null for an unmapped status', () => {
+  it('leaves bucket and key null for an unmapped status', () => {
     const row = mapClickUpTask(task({ status: { status: 'Weird' } }), {
       tenantId: 'T1',
       source: 'delivery',
       statusMap,
     });
     expect(row.bucket).toBeNull();
+    expect(row.statusKey).toBeNull();
+  });
+
+  it('keeps the catalogue key distinct from the bucket for review statuses', () => {
+    // "in client review" rolls up to in_progress for counts but must reach the
+    // client as its own status (rendered "UAT"), not as "In progress".
+    const row = mapClickUpTask(task({ status: { status: 'In Client Review' } }), {
+      tenantId: 'T1',
+      source: 'delivery',
+      statusMap,
+    });
+    expect(row.bucket).toBe('in_progress');
+    expect(row.statusKey).toBe('client_review');
   });
 
   it('defaults client_visible to false and rag to null when absent', () => {
