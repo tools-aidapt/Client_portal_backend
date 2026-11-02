@@ -109,12 +109,17 @@ export const portalService = {
   },
 
   async onboarding(tenantId: string) {
-    const tasks = await portalRepo.onboardingTasks(tenantId);
+    const [tasks, statuses] = await Promise.all([
+      portalRepo.onboardingTasks(tenantId),
+      portalRepo.taskStatuses(),
+    ]);
     // One public form for every client (submissions route by the Client Group
     // picked in the form itself), so it's config, not per-tenant data. Null when
     // unconfigured — the frontend disables the button rather than opening
     // nowhere.
-    return { tasks, intake_form_url: config.web.onboardingFormUrl ?? null };
+    // `statuses` is the catalogue, so the page can group and label tasks by
+    // their real status (Backlog, In progress, Live, …) in catalogue order.
+    return { tasks, statuses, intake_form_url: config.web.onboardingFormUrl ?? null };
   },
 
   async pod(tenantId: string) {
