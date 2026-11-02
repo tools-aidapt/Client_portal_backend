@@ -1,5 +1,5 @@
 import { pool, withTransaction, type Queryable } from '@infra/db/pool.js';
-import type { TaskBucket, TaskCacheUpsert } from './mapper.js';
+import type { StatusMap, TaskBucket, TaskCacheUpsert } from './mapper.js';
 import type { ReportDocUpsert, ReportSectionUpsert } from './report-mapper.js';
 import type { UseCaseUpsert } from './usecase-mapper.js';
 
@@ -59,12 +59,12 @@ export const syncRepo = {
   },
 
   /**
-   * Status -> bucket map for a tenant, merged over the global default
-   * (tenant-specific rows win). Keys are lowercased raw statuses.
+   * Status -> {catalogue key, bucket} map for a tenant, merged over the global
+   * default (tenant-specific rows win). Keys are lowercased raw statuses.
    */
-  async getStatusMap(tenantId: string): Promise<Map<string, TaskBucket>> {
-    const { rows } = await pool.query<{ raw_status: string; bucket: TaskBucket }>(
-      `select raw_status, bucket from portal.clickup_status_map
+  async getStatusMap(tenantId: string): Promise<StatusMap> {
+    const { rows } = await pool.query<{ raw_status: string; bucket: TaskBucket; status_key: string }>(
+      `select raw_status, bucket, status_key from portal.clickup_status_map
         where tenant_id is null or tenant_id = $1
         order by (tenant_id is null) desc`, // globals first, tenant rows overwrite
       // `desc` is load-bearing. In Postgres false < true, so plain ascending put
@@ -73,8 +73,8 @@ export const syncRepo = {
       // per-tenant override, the exact opposite of this method's contract.
       [tenantId],
     );
-    const map = new Map<string, TaskBucket>();
-    for (const r of rows) map.set(r.raw_status.toLowerCase(), r.bucket);
+    const map: StatusMap = new Map();
+    for (const r of rows) map.set(r.raw_status.toLowerCase(), { bucket: r.bucket, statusKey: r.status_key });
     return map;
   },
 
@@ -340,15 +340,25 @@ export const syncRepo = {
     return rowCount ?? 0;
   },
 
-  /** Idempotent upsert keyed by clickup_task_id. */
+  /**
+   * Idempotent upsert keyed by clickup_task_id.
+   *
+   * A manual status override (set in the Hub, never written to ClickUp) is
+   * kept across syncs for as long as ClickUp's own status stands still. The
+   * moment ClickUp moves the task to a different status the override is
+   * dropped: that is newer information than the admin's pin, and keeping the
+   * pin would let a task marked "UAT" by hand sit there after ClickUp closed
+   * it. `bucket` always follows the EFFECTIVE status (override, else synced),
+   * which is what every count downstream reads.
+   */
   async upsertTask(t: TaskCacheUpsert): Promise<void> {
     await pool.query(
       `insert into portal.task_cache
          (tenant_id, clickup_task_id, source, sprint_id, clickup_list_id, list_name,
-          name, display_title, status_raw, bucket, rag, progress_pct, type_of_work,
+          name, display_title, status_raw, status_key, bucket, rag, progress_pct, type_of_work,
           parent_task_id, client_visible, assignee_names, start_date, due_date,
           closed_at, url, clickup_updated_at, synced_at)
-       values ($1,$2,$3::portal.task_source,$4,$5,$6,$7,$8,$9,$10::portal.task_bucket,
+       values ($1,$2,$3::portal.task_source,$4,$5,$6,$7,$8,$9,$22,$10::portal.task_bucket,
                $11::portal.rag_status,$12,$13,$14,$15,$16::text[],$17,$18,$19,$20,$21, now())
        on conflict (clickup_task_id) do update set
          tenant_id = excluded.tenant_id,
@@ -359,7 +369,20 @@ export const syncRepo = {
          name = excluded.name,
          display_title = excluded.display_title,
          status_raw = excluded.status_raw,
-         bucket = excluded.bucket,
+         status_key = excluded.status_key,
+         status_override_key = case
+           when excluded.status_key is distinct from task_cache.status_key then null
+           else task_cache.status_override_key end,
+         status_override_by = case
+           when excluded.status_key is distinct from task_cache.status_key then null
+           else task_cache.status_override_by end,
+         status_override_at = case
+           when excluded.status_key is distinct from task_cache.status_key then null
+           else task_cache.status_override_at end,
+         bucket = case
+           when excluded.status_key is distinct from task_cache.status_key
+             or task_cache.status_override_key is null then excluded.bucket
+           else (select s.bucket from portal.task_statuses s where s.key = task_cache.status_override_key) end,
          rag = excluded.rag,
          progress_pct = excluded.progress_pct,
          type_of_work = excluded.type_of_work,
@@ -376,7 +399,7 @@ export const syncRepo = {
         t.tenantId, t.clickupTaskId, t.source, t.sprintId, t.clickupListId, t.listName,
         t.name, t.displayTitle, t.statusRaw, t.bucket, t.rag, t.progressPct, t.typeOfWork,
         t.parentTaskId, t.clientVisible, t.assigneeNames, t.startDate, t.dueDate, t.closedAt, t.url,
-        t.clickupUpdatedAt,
+        t.clickupUpdatedAt, t.statusKey,
       ],
     );
   },

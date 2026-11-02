@@ -4,6 +4,7 @@ import { adminClientsRoutes } from '@modules/admin/clients/routes/clients.routes
 import { adminTenantsRoutes } from '@modules/admin/tenants/routes/tenants.routes.js';
 import { adminWishlistRoutes } from '@modules/admin/wishlist/wishlist.routes.js';
 import { syncConsoleRoutes } from '@modules/admin/sync/sync-console.routes.js';
+import { taskStatusRoutes } from '@modules/admin/task-status/task-status.routes.js';
 import { outboxRoutes } from '@modules/outbox/outbox.routes.js';
 import { syncRoutes, clickupWebhookRoutes } from '@modules/sync/clickup/sync.routes.js';
 import { portalRoutes } from '@modules/portal/portal.routes.js';
@@ -48,6 +49,8 @@ apiRouter.use('/admin/clients/:id/automations', adminAutomationRoutes);
 apiRouter.use('/admin/wishlist', adminWishlistRoutes);
 // Sync Console — platform-admin, browser-facing sibling of /internal/sync.
 apiRouter.use('/admin/sync', syncConsoleRoutes);
+// The client-facing task status catalogue (labels, tones) for the admin picker.
+apiRouter.use('/admin/task-statuses', taskStatusRoutes);
 
 // Internal — service-role only (design §10.6)
 apiRouter.use('/internal/outbox', outboxRoutes);

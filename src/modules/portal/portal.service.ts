@@ -16,6 +16,33 @@ function projectStatus(tasks: Array<Record<string, unknown>>): Bucket {
   return buckets.has('delivered') ? 'delivered' : buckets.has('in_progress') ? 'in_progress' : 'upcoming';
 }
 
+type StatusRow = { key: string; label: string; tone: string; bucket: string; sort_order: number };
+
+/**
+ * The status a project should READ as, which is finer than its bucket.
+ *
+ * The bucket says "in progress" for a project whose last open phase is in UAT,
+ * which is exactly the complaint that prompted the catalogue. So: the project
+ * takes the status of its most advanced phase that is not yet delivered
+ * (highest catalogue sort order — UAT beats In progress beats To do). When
+ * every phase is delivered it takes the most advanced delivered one (Live over
+ * Complete). A phase whose status the catalogue doesn't know is ignored here
+ * and still counts through its bucket. No phases: To do.
+ */
+function projectStatusKey(
+  tasks: Array<Record<string, unknown>>,
+  catalogue: StatusRow[],
+): StatusRow | null {
+  const byKey = new Map(catalogue.map((c) => [c.key, c]));
+  const known = tasks
+    .map((t) => byKey.get(String(t.status_key ?? '')))
+    .filter((c): c is StatusRow => Boolean(c));
+  if (known.length === 0) return byKey.get('to_do') ?? null;
+  const open = known.filter((c) => c.bucket !== 'delivered');
+  const pool = open.length > 0 ? open : known;
+  return pool.reduce((best, c) => (c.sort_order > best.sort_order ? c : best));
+}
+
 /**
  * A project's completion, averaged across its phases. Phase percentages come
  * from ClickUp's own "Progress %" roll-up, so this is an average of averages —
@@ -32,18 +59,27 @@ function projectProgress(phases: Array<Record<string, unknown>>): number | null 
 
 export const portalService = {
   async projects(tenantId: string) {
-    const projects = await portalRepo.projects(tenantId);
+    const [projects, catalogue] = await Promise.all([
+      portalRepo.projects(tenantId),
+      portalRepo.taskStatuses(),
+    ]);
     return {
       total: projects.length,
-      projects: projects.map((p) => ({
-        clickup_list_id: p.clickup_list_id,
-        name: p.name,
-        status: projectStatus(p.tasks),
-        progress_pct: projectProgress(p.tasks),
-        phase_total: p.tasks.length,
-        phase_done: p.tasks.filter((t) => t.bucket === 'delivered').length,
-        tasks: p.tasks,
-      })),
+      projects: projects.map((p) => {
+        const fine = projectStatusKey(p.tasks, catalogue);
+        return {
+          clickup_list_id: p.clickup_list_id,
+          name: p.name,
+          status: projectStatus(p.tasks),
+          status_key: fine?.key ?? null,
+          status_label: fine?.label ?? null,
+          status_tone: fine?.tone ?? null,
+          progress_pct: projectProgress(p.tasks),
+          phase_total: p.tasks.length,
+          phase_done: p.tasks.filter((t) => t.bucket === 'delivered').length,
+          tasks: p.tasks,
+        };
+      }),
     };
   },
 
