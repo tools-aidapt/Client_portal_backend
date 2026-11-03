@@ -14,9 +14,9 @@ export const useCasesController = {
     // `limit` is coerced to a number by the route's zod schema.
     const { q, niche, category, build_type: buildType, limit } = req.query as unknown as {
       q?: string;
-      niche?: string;
-      category?: string;
-      build_type?: string;
+      niche?: string[];
+      category?: string[];
+      build_type?: string[];
       limit?: number;
     };
     res

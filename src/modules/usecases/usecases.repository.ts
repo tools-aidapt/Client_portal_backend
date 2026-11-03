@@ -33,9 +33,10 @@ export interface LibraryDetailRow extends Omit<LibraryRow, 'snippet'> {
 export interface LibraryQuery {
   /** A ready-to-use tsquery string (built by the service), or null to browse all. */
   tsQuery: string | null;
-  niche: string | null;
-  category: string | null;
-  buildType: string | null;
+  /** OR'd within a dimension; dimensions are AND'd together. Null means no filter. */
+  niche: string[] | null;
+  category: string[] | null;
+  buildType: string[] | null;
 }
 
 export interface LibraryPage extends LibraryQuery {
@@ -61,17 +62,17 @@ function buildFilter(q: LibraryQuery): { where: string; params: unknown[]; next:
     params.push(q.tsQuery);
     clauses.push(`search_vector @@ to_tsquery('english', $${params.length})`);
   }
-  if (q.niche) {
+  if (q.niche?.length) {
     params.push(q.niche);
-    clauses.push(`niche = $${params.length}`);
+    clauses.push(`niche = any($${params.length}::text[])`);
   }
-  if (q.category) {
+  if (q.category?.length) {
     params.push(q.category);
-    clauses.push(`category = $${params.length}`);
+    clauses.push(`category = any($${params.length}::text[])`);
   }
-  if (q.buildType) {
+  if (q.buildType?.length) {
     params.push(q.buildType);
-    clauses.push(`build_type = $${params.length}`);
+    clauses.push(`build_type = any($${params.length}::text[])`);
   }
   return { where: clauses.join(' and '), params, next: params.length + 1 };
 }

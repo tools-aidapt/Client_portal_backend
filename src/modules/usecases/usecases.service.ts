@@ -59,16 +59,17 @@ export function toTsQuery(raw: string | undefined | null): string | null {
 export const useCasesService = {
   async list(params: {
     q?: string;
-    niche?: string;
-    category?: string;
-    buildType?: string;
+    niche?: string[];
+    category?: string[];
+    buildType?: string[];
     limit?: number;
   }) {
+    // An empty list (e.g. `?niche=`) means "no filter", same as an absent param.
     const query: LibraryQuery = {
       tsQuery: toTsQuery(params.q),
-      niche: params.niche ?? null,
-      category: params.category ?? null,
-      buildType: params.buildType ?? null,
+      niche: params.niche?.length ? params.niche : null,
+      category: params.category?.length ? params.category : null,
+      buildType: params.buildType?.length ? params.buildType : null,
     };
     const limit = params.limit ?? DEFAULT_LIMIT;
 
@@ -90,9 +91,11 @@ export const useCasesService = {
       /** Echoed back so the client can tell an ignored query from an applied one. */
       query: {
         q: params.q ?? null,
-        niche: query.niche,
-        category: query.category,
-        build_type: query.buildType,
+        // Echoed as the comma-joined string the caller sent, so single-value
+        // responses are unchanged.
+        niche: query.niche?.join(',') ?? null,
+        category: query.category?.join(',') ?? null,
+        build_type: query.buildType?.join(',') ?? null,
         limit,
         /** False when `q` was given but held nothing searchable. */
         search_applied: query.tsQuery !== null,

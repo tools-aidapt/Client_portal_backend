@@ -27,6 +27,7 @@ for (const qs of [
   '?niche=Insurance',
   '?q=claims&niche=Insurance',
   '?category=Operations&build_type=Agent',
+  '?niche=Insurance,Fintech&category=Operations',
   '?q=%2B%2B%2B---%26%26',
   '?q=zzzznomatch',
 ]) {
