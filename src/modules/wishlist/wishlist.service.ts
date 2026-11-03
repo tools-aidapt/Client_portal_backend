@@ -59,6 +59,8 @@ export const wishlistService = {
               name: p.display_name,
               status_key: p.status_key,
               status_label: p.status_label,
+              status_tone: p.status_tone ?? null,
+              capability: p.capability ?? null,
               progress_pct: p.progress_pct,
             }
           : null,

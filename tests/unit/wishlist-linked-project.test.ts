@@ -16,6 +16,8 @@ describe('wishlistService.withLinkedProjects', () => {
           display_name: 'Invoice Automation',
           status_key: 'in_progress',
           status_label: 'In progress',
+          status_tone: 'info',
+          capability: 'operations',
           progress_pct: 40,
         },
       ],
@@ -32,6 +34,8 @@ describe('wishlistService.withLinkedProjects', () => {
         name: 'Invoice Automation',
         status_key: 'in_progress',
         status_label: 'In progress',
+        status_tone: 'info',
+        capability: 'operations',
         progress_pct: 40,
       },
     });
