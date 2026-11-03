@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { pool, withTransaction } from '@infra/db/pool.js';
-import { BadRequestError, ForbiddenError, NotFoundError } from '@common/errors/index.js';
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from '@common/errors/index.js';
+import { projectConflict } from './vote-permission.js';
 import type { WishlistItemUpsert } from '@modules/sync/clickup/wishlist-mapper.js';
 
 /**
@@ -37,6 +38,35 @@ export interface CycleRow {
 }
 
 export const wishlistRepo = {
+  /** Whether this client lets plain members vote. No row means off. */
+  async membersCanVote(tenantId: string): Promise<boolean> {
+    const { rows } = await pool.query<{ members_can_vote: boolean }>(
+      `select members_can_vote from portal.wishlist_settings where tenant_id = $1`,
+      [tenantId],
+    );
+    return rows[0]?.members_can_vote ?? false;
+  },
+
+  async setMembersCanVote(tenantId: string, value: boolean, updatedBy: string): Promise<boolean> {
+    // Unknown tenant surfaces as an FK violation; report it as a 404, not a 500.
+    const { rows } = await pool
+      .query<{ members_can_vote: boolean }>(
+      `insert into portal.wishlist_settings (tenant_id, members_can_vote, updated_by, updated_at)
+       values ($1, $2, $3, now())
+       on conflict (tenant_id) do update set
+         members_can_vote = excluded.members_can_vote,
+         updated_by = excluded.updated_by,
+         updated_at = now()
+       returning members_can_vote`,
+      [tenantId, value, updatedBy],
+    )
+      .catch((err: { code?: string }) => {
+        if (err.code === '23503') throw new NotFoundError('Client not found');
+        throw err;
+      });
+    return rows[0]!.members_can_vote;
+  },
+
   /**
    * The tenant's recent cycles, newest first.
    *
@@ -101,7 +131,7 @@ export const wishlistRepo = {
               ($3::uuid is not null and exists(
                  select 1 from portal.wishlist_votes v
                   where v.cycle_id = $3 and v.item_id = wi.id and v.user_id = $4)) as voted_by_me,
-              ($3::uuid is not null and wi.state = 'candidate') as can_vote
+              ($3::uuid is not null and wi.state = 'candidate' and wi.project_list_id is null) as can_vote
          from portal.wishlist_items wi
         where wi.tenant_id = $1
           and wi.archived_at is null
@@ -211,9 +241,13 @@ export const wishlistRepo = {
     client: PoolClient,
     tenantId: string,
     itemId: string,
-  ): Promise<{ cycleId: string; state: string }> {
-    const { rows: itemRows } = await client.query<{ tenant_id: string; state: string }>(
-      `select tenant_id, state from portal.wishlist_items where id = $1 and archived_at is null`,
+  ): Promise<{ cycleId: string; state: string; projectListId: string | null }> {
+    const { rows: itemRows } = await client.query<{
+      tenant_id: string;
+      state: string;
+      project_list_id: string | null;
+    }>(
+      `select tenant_id, state, project_list_id from portal.wishlist_items where id = $1 and archived_at is null`,
       [itemId],
     );
     const item = itemRows[0];
@@ -229,7 +263,7 @@ export const wishlistRepo = {
     const cycle = cycleRows[0];
     if (!cycle) throw new BadRequestError('Voting is not open for this tenant');
 
-    return { cycleId: cycle.id, state: item.state };
+    return { cycleId: cycle.id, state: item.state, projectListId: item.project_list_id };
   },
 
   /**
@@ -242,7 +276,15 @@ export const wishlistRepo = {
    */
   async vote(tenantId: string, itemId: string, userId: string): Promise<VoteResult> {
     return withTransaction(async (client) => {
-      const { cycleId, state } = await this.resolveVoteContext(client, tenantId, itemId);
+      const { cycleId, state, projectListId } = await this.resolveVoteContext(
+        client,
+        tenantId,
+        itemId,
+      );
+      // An item that is already a project can't be voted on. 409 (not 400): the
+      // request is well formed, it conflicts with the item's current state.
+      const conflict = projectConflict({ project_list_id: projectListId, state });
+      if (conflict) throw new ConflictError(conflict);
       // Nothing stopped this before, so a client could spend a vote on something
       // already won and shipped.
       if (state !== 'candidate') throw new BadRequestError('This item is no longer up for vote');

@@ -1,7 +1,9 @@
 import { config } from '@config/index.js';
 import { portalService } from '@modules/portal/portal.service.js';
 import { buildLinkedProject } from '@modules/portal/linked-project.js';
+import { ForbiddenError } from '@common/errors/index.js';
 import { wishlistRepo } from './wishlist.repository.js';
+import { canCastVote, votesAlways } from './vote-permission.js';
 
 export const wishlistService = {
   /**
@@ -12,7 +14,8 @@ export const wishlistService = {
    * nothing is open, counts fall back to the most recent closed cycle so the
    * board shows the last real tally instead of a row of zeros.
    */
-  async list(tenantId: string, userId: string, filter: { state?: string } = {}) {
+  async list(tenantId: string, userId: string, role: string, filter: { state?: string } = {}) {
+    const membersCanVote = await wishlistRepo.membersCanVote(tenantId);
     const cycles = await wishlistRepo.cycles(tenantId);
     const cycle = cycles.find((c) => c.is_open) ?? null;
     const lastClosed = cycles.find((c) => !c.is_open) ?? null;
@@ -28,6 +31,10 @@ export const wishlistService = {
     return {
       cycle,
       last_closed_cycle: lastClosed,
+      // The per-client switch, and the answer for THIS viewer so the frontend
+      // doesn't re-derive the rule from role names.
+      members_can_vote: membersCanVote,
+      viewer_can_vote: canCastVote(role, membersCanVote),
       items: await this.withLinkedProjects(tenantId, items),
       // The public request form. Requests are authored in ClickUp, not here: the
       // form writes to the shared "ORG - Client - Wishlist" list and the item
@@ -72,11 +79,34 @@ export const wishlistService = {
     });
   },
 
-  async vote(tenantId: string, itemId: string, userId: string) {
+  /**
+   * Admins always may; a member only when the client's switch is on. The switch is
+   * read only for members, so the common admin path costs no extra query.
+   */
+  async assertCanVote(tenantId: string, role: string): Promise<void> {
+    if (votesAlways(role)) return;
+    if (!canCastVote(role, await wishlistRepo.membersCanVote(tenantId))) {
+      throw new ForbiddenError('Voting is not enabled for members of this organisation');
+    }
+  },
+
+  async vote(tenantId: string, itemId: string, userId: string, role: string) {
+    await this.assertCanVote(tenantId, role);
     return wishlistRepo.vote(tenantId, itemId, userId);
   },
 
-  async unvote(tenantId: string, itemId: string, userId: string) {
+  async unvote(tenantId: string, itemId: string, userId: string, role: string) {
+    await this.assertCanVote(tenantId, role);
     return wishlistRepo.unvote(tenantId, itemId, userId);
+  },
+
+  async getSettings(tenantId: string) {
+    return { members_can_vote: await wishlistRepo.membersCanVote(tenantId) };
+  },
+
+  async updateSettings(tenantId: string, membersCanVote: boolean, staffUserId: string) {
+    return {
+      members_can_vote: await wishlistRepo.setMembersCanVote(tenantId, membersCanVote, staffUserId),
+    };
   },
 };

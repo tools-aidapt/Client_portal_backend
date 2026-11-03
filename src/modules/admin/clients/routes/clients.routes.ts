@@ -214,6 +214,22 @@ adminClientsRoutes.patch(
   asyncHandler(taskLinksController.setOnboardingProject),
 );
 
+// Per-client wishlist settings. `members_can_vote` lets plain client members vote
+// (default off). Aidapt staff only: it changes who can influence delivery.
+adminClientsRoutes.get(
+  '/:id/wishlist-settings',
+  requireAidaptStaff,
+  validate({ params: tenantIdParam }),
+  asyncHandler(adminVotingController.getWishlistSettings),
+);
+
+adminClientsRoutes.put(
+  '/:id/wishlist-settings',
+  requireAidaptStaff,
+  validate({ params: tenantIdParam, body: z.object({ members_can_vote: z.boolean() }) }),
+  asyncHandler(adminVotingController.updateWishlistSettings),
+);
+
 // --- Voting cycles (tenant-scoped; /internal/voting/close-cycle is global) ---
 
 const cycleParams = tenantIdParam.extend({ cycleId: z.string().uuid() });

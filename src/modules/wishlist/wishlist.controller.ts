@@ -4,16 +4,18 @@ import { UnauthorizedError } from '@common/errors/index.js';
 import { ok } from '@common/utils/api-response.js';
 import { wishlistService } from './wishlist.service.js';
 
-function ctx(req: Request): { tenantId: string; userId: string } {
+function ctx(req: Request): { tenantId: string; userId: string; role: string } {
   if (!req.auth || !req.tenant) throw new UnauthorizedError();
-  return { tenantId: req.tenant.id, userId: req.auth.user.id };
+  return { tenantId: req.tenant.id, userId: req.auth.user.id, role: req.tenant.role };
 }
 
 export const wishlistController = {
   async list(req: Request, res: Response): Promise<void> {
-    const { tenantId, userId } = ctx(req);
+    const { tenantId, userId, role } = ctx(req);
     const state = req.query.state as string | undefined;
-    res.status(StatusCodes.OK).json(ok(await wishlistService.list(tenantId, userId, { state })));
+    res
+      .status(StatusCodes.OK)
+      .json(ok(await wishlistService.list(tenantId, userId, role, { state })));
   },
 
   async submit(req: Request, res: Response): Promise<void> {
@@ -34,14 +36,14 @@ export const wishlistController = {
   },
 
   async vote(req: Request, res: Response): Promise<void> {
-    const { tenantId, userId } = ctx(req);
-    const result = await wishlistService.vote(tenantId, req.params.id!, userId);
+    const { tenantId, userId, role } = ctx(req);
+    const result = await wishlistService.vote(tenantId, req.params.id!, userId, role);
     res.status(StatusCodes.OK).json(ok(result));
   },
 
   async unvote(req: Request, res: Response): Promise<void> {
-    const { tenantId, userId } = ctx(req);
-    const result = await wishlistService.unvote(tenantId, req.params.id!, userId);
+    const { tenantId, userId, role } = ctx(req);
+    const result = await wishlistService.unvote(tenantId, req.params.id!, userId, role);
     res.status(StatusCodes.OK).json(ok(result));
   },
 };

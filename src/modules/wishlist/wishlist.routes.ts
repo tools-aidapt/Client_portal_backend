@@ -13,7 +13,8 @@ import { votingService } from './voting.service.js';
 /**
  * Client-facing wishlist (design §10.4).
  *
- * READ is `member`; submitting and voting stay `member_plus`. The gate used to be
+ * READ is `member`; submitting is `admin`; voting is `admin`, or `member` when the
+ * client's `members_can_vote` switch is on. The gate used to be
  * router-wide at `member_plus`, which broke plain members badly: `/wishlist` is a
  * member's default landing page on the frontend, so signing in put them on a page
  * that answered 403 and rendered the raw string "Requires role member_plus" as
@@ -25,7 +26,9 @@ export const wishlistRoutes = Router();
 wishlistRoutes.use(authenticate);
 
 const canRead = requireTenantRole('member');
-const canVote = requireTenantRole('admin');
+// Submitting stays admin-only. Voting is gated in the service: admins always,
+// members only when Aidapt has enabled `members_can_vote` for the client.
+const canSubmit = requireTenantRole('admin');
 
 wishlistRoutes.get(
   '/',
@@ -40,7 +43,7 @@ wishlistRoutes.get(
 
 wishlistRoutes.post(
   '/',
-  canVote,
+  canSubmit,
   validate({
     body: z.object({
       title: z.string().trim().min(1).max(200),
@@ -54,7 +57,7 @@ wishlistRoutes.post(
 
 wishlistRoutes.post(
   '/:id/vote',
-  canVote,
+  canRead,
   validate({ params: z.object({ id: z.string().uuid() }) }),
   asyncHandler(wishlistController.vote),
 );
@@ -63,7 +66,7 @@ wishlistRoutes.post(
 // is exactly what it means; it is idempotent, so a retried request is safe.
 wishlistRoutes.delete(
   '/:id/vote',
-  canVote,
+  canRead,
   validate({ params: z.object({ id: z.string().uuid() }) }),
   asyncHandler(wishlistController.unvote),
 );

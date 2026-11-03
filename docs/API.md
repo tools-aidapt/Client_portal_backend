@@ -119,8 +119,8 @@ a client admin cannot promote or suspend a colleague.
 |---|---|---|---|
 | GET | `/wishlist` | **member** (read-only) | `{ cycle, last_closed_cycle, items[] }` — see below |
 | POST | `/wishlist` | member_plus | `{ title, description?, reference_video_url?, department? }` — a portal-native request. **The Wishlist page does not use this**; it links out to `submit_form_url` so every request goes through ClickUp. Kept for API completeness |
-| POST | `/wishlist/:id/vote` | member_plus | — → `{ item_id, votes, voted: true, changed }`. **Idempotent**: voting twice is a `200` with `changed: false`, not a `409`. `400` if the item is no longer a `candidate` |
-| DELETE | `/wishlist/:id/vote` | member_plus | remove your vote → `{ item_id, votes, voted: false, changed }`. **Idempotent**: un-voting when you hadn't voted is a `200` with `changed: false`, not a `404`. `400` when no cycle is open — a decided cycle can't be rewritten |
+| POST | `/wishlist/:id/vote` | admin; **member** when the client's `members_can_vote` is on (else `403`) | — → `{ item_id, votes, voted: true, changed }`. **Idempotent**: voting twice is a `200` with `changed: false`, not a `409`. undefined |
+| DELETE | `/wishlist/:id/vote` | same as vote | remove your vote → `{ item_id, votes, voted: false, changed }`. **Idempotent**: un-voting when you hadn't voted is a `200` with `changed: false`, not a `404`. `400` when no cycle is open — a decided cycle can't be rewritten |
 
 **Reading is `member`; submitting and voting are `member_plus`.** A base-tier member
 sees the whole board read-only (this endpoint used to be `member_plus` router-wide,
@@ -204,6 +204,7 @@ Sync: `POST /internal/sync/reports` with `{}`.
 | POST | `/admin/clients/:id/projects/discover` | pull projects from ClickUp |
 | PATCH | `/admin/clients/:id/projects/:listId` | `{ is_visible }` |
 | GET | `/admin/task-statuses` | `{ statuses[] }` — the client-facing status catalogue (`portal.task_statuses`, migration 0044): `key`, `label`, `tone`, `bucket`, `sort_order`, `description`, in display order. Global, not per tenant. This is what the Hub's status picker offers |
+| GET/PUT | `/admin/clients/:id/wishlist-settings` | (**Aidapt staff only**) `{ members_can_vote: boolean }` (PUT body and both responses). Default false. `GET /wishlist` also returns `members_can_vote` and `viewer_can_vote` |
 | PATCH | `/admin/clients/:id/wishlist/:itemId/project` | `{ project_list_id: string \| null }` (**Aidapt staff only**) -> `{ item_id, project_list_id }`. Links a wishlist item to the project (ClickUp list, `GET /admin/clients/:id/projects`) that delivered it; `null` unlinks. `404` when the item or the list is not this client's. `GET /wishlist` items then carry `linked_project: { list_id, name, status_key, status_label, progress_pct } \| null` |
 | GET | `/admin/clients/:id/wishlist-items` | `{ items[] }` — the client's wishlist items (`id`, `title`, `state`, `created_at`) each with `linked_clickup_task_id` / `linked_task_name`, so you can see which prioritised items still need a Process List task attached |
 | GET | `/admin/project-tags` | **Aidapt staff only.** -> `{ data: [{ id, key, label, tone, sort_order }] }` |

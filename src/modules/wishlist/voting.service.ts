@@ -22,9 +22,9 @@ export interface CloseCycleSummary {
 /**
  * Who hears about a voting event: `admin` and above.
  *
- * Not every active member — plain `member` can read the board but cannot vote, so
- * telling them "voting results are in" invites an action they don't have. The old
- * fan-out notified everyone, including members who then hit a 403.
+ * Plain `member`s are included only when the client has switched on
+ * `members_can_vote` (migration 0048); otherwise they can read the board but not
+ * vote, and telling them "voting results are in" invites an action they don't have.
  */
 async function notifyVoters(
   client: PoolClient,
@@ -39,7 +39,10 @@ async function notifyVoters(
        from core.memberships m
       where m.tenant_id = $1
         and m.status = 'active'
-        and m.role in ('admin','super_admin')`,
+        and (m.role in ('admin','super_admin')
+             or (m.role = 'member' and exists (
+                   select 1 from portal.wishlist_settings ws
+                    where ws.tenant_id = m.tenant_id and ws.members_can_vote)))`,
     [tenantId, type, title, body],
   );
   return rowCount ?? 0;
@@ -124,6 +127,9 @@ export const votingService = {
            from portal.wishlist_votes v
            join portal.wishlist_items wi on wi.id = v.item_id
           where v.cycle_id = $1 and wi.archived_at is null
+            -- Already a project: can't win again. Its votes stay as history.
+            and wi.project_list_id is null
+            and wi.state not in ('in_progress','shipped')
           group by v.item_id, wi.title, wi.created_at
           order by votes desc, wi.created_at asc
           limit 1`,

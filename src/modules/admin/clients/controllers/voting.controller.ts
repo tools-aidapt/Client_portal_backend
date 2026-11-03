@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { StatusCodes } from 'http-status-codes';
 import { ok } from '@common/utils/api-response.js';
+import { wishlistService } from '@modules/wishlist/wishlist.service.js';
 import { votingService } from '@modules/wishlist/voting.service.js';
 import { adminVotingRepo } from '../repositories/voting.repository.js';
 
@@ -12,6 +13,22 @@ import { adminVotingRepo } from '../repositories/voting.repository.js';
  * act on one client without collateral.
  */
 export const adminVotingController = {
+  /** The client's wishlist settings (currently just the member-voting switch). */
+  async getWishlistSettings(req: Request, res: Response): Promise<void> {
+    res.status(StatusCodes.OK).json(ok(await wishlistService.getSettings(req.params.id!)));
+  },
+
+  /** Aidapt staff switch member voting on or off for this client. */
+  async updateWishlistSettings(req: Request, res: Response): Promise<void> {
+    const { members_can_vote } = req.body as { members_can_vote: boolean };
+    const result = await wishlistService.updateSettings(
+      req.params.id!,
+      members_can_vote,
+      req.auth!.user.id,
+    );
+    res.status(StatusCodes.OK).json(ok(result));
+  },
+
   /** Cycles for this client, with the tally each produced. */
   async listCycles(req: Request, res: Response): Promise<void> {
     const cycles = await adminVotingRepo.cycles(req.params.id!);
