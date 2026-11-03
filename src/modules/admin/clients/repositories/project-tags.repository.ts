@@ -78,7 +78,7 @@ export const projectTagsRepo = {
       if (tagIds.length > 0) {
         await client.query(
           `insert into portal.project_tag_assignments (tenant_id, clickup_list_id, tag_id, is_primary, created_by)
-           select $1, $2, t, t = $3::uuid, $4 from unnest($5::uuid[]) as t`,
+           select $1, $2, t, coalesce(t = $3::uuid, false), $4 from unnest($5::uuid[]) as t`,
           [tenantId, listId, primaryTagId, userId, tagIds],
         );
       }
