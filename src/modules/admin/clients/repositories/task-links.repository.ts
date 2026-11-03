@@ -115,4 +115,44 @@ export const taskLinksRepo = {
       return { item_id: itemId, project_list_id: projectListId };
     });
   },
+
+  /**
+   * Point an onboarding request at the project delivering it, or clear the link
+   * with null. The task must be a top-level task on THIS tenant's onboarding
+   * list (a shared list: other clients' rows never match) and the list must be
+   * this tenant's project mapping; either miss is a 404.
+   */
+  async setOnboardingProject(
+    tenantId: string,
+    clickupTaskId: string,
+    projectListId: string | null,
+  ): Promise<{ task_id: string; project_list_id: string | null }> {
+    return withTransaction(async (client) => {
+      const { rows: taskRows } = await client.query(
+        `select 1
+           from portal.task_cache tc
+           join portal.clickup_list_mappings m
+             on m.tenant_id = tc.tenant_id and m.clickup_list_id = tc.clickup_list_id
+          where tc.clickup_task_id = $1 and tc.tenant_id = $2
+            and m.purpose = 'onboarding' and tc.parent_task_id is null`,
+        [clickupTaskId, tenantId],
+      );
+      if (!taskRows[0]) throw new NotFoundError('No onboarding request with that ClickUp id for this client');
+
+      if (projectListId) {
+        const { rows: listRows } = await client.query(
+          `select 1 from portal.clickup_list_mappings
+            where tenant_id = $1 and clickup_list_id = $2 and purpose = 'project'`,
+          [tenantId, projectListId],
+        );
+        if (!listRows[0]) throw new NotFoundError('No project with that list id for this client');
+      }
+
+      await client.query(
+        `update portal.task_cache set project_list_id = $3 where clickup_task_id = $1 and tenant_id = $2`,
+        [clickupTaskId, tenantId, projectListId],
+      );
+      return { task_id: clickupTaskId, project_list_id: projectListId };
+    });
+  },
 };

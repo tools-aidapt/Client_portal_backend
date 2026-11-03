@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseProjectName } from '@modules/portal/project-name.js';
+import { parseNameSuffixCapability, parseProjectName } from '@modules/portal/project-name.js';
 
 describe('parseProjectName', () => {
   it.each([
@@ -29,4 +29,23 @@ describe('parseProjectName', () => {
       expect(parseProjectName(input)).toEqual({ display_name: input, capability: null });
     },
   );
+});
+
+describe('parseNameSuffixCapability', () => {
+  it.each([
+    ['Kenafric - Operations', 'operations'],
+    ['Tile & Carpet Centre - Intelligence', 'intelligence'],
+    ['Kenafric Industries Limited - Enablement', 'enablement'],
+    ['Kenafric - Operations / Intelligence', 'operations_intelligence'],
+    ['Kenafric - Intelligence & Operations', 'operations_intelligence'],
+    ['Kenafric \u2013 AI Operations', 'operations'],
+    ['Kenafric - Website', null],
+    ['Kenafric - Operations - Website', null],
+    ['Kenafric - Operations / Enablement', null],
+    ['Operations', null],
+    ['Kenafric-Operations', null],
+    ['', null],
+  ])('%s -> %s', (name, expected) => {
+    expect(parseNameSuffixCapability(name)).toBe(expected);
+  });
 });

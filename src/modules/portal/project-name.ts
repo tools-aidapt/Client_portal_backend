@@ -41,3 +41,25 @@ export function parseProjectName(name: string): { display_name: string; capabili
   if (!m) return { display_name: name, capability: null };
   return { display_name: m[2]!.trim(), capability: CAPABILITY[m[1]!.toLowerCase()]! };
 }
+
+/**
+ * The capability named by the TRAILING segment of an onboarding request's task
+ * name: "Kenafric - Operations" -> operations, "Kenafric - Operations /
+ * Intelligence" -> operations_intelligence. Only the text after the last
+ * spaced dash is read, and only when every word in it is a capability word
+ * (an optional "AI" prefix is ignored), so "Kenafric - Website" is null.
+ */
+export function parseNameSuffixCapability(name: string): ProjectCapability | null {
+  const m = /^.*\S\s+[-\u2013\u2014]\s+([^-\u2013\u2014]+?)\s*$/.exec(name);
+  if (!m) return null;
+  const parts = m[1]!
+    .toLowerCase()
+    .split(/\s*[/&+,]\s*|\s+and\s+/)
+    .map((p) => p.trim().replace(/^ai\s+/, ''));
+  if (parts.length === 0 || parts.length > 2) return null;
+  const caps = parts.map((p) => CAPABILITY[p]);
+  if (caps.some((c) => !c)) return null;
+  const set = new Set(caps as ProjectCapability[]);
+  if (set.size === 1) return [...set][0]!;
+  return set.has('operations') && set.has('intelligence') ? 'operations_intelligence' : null;
+}

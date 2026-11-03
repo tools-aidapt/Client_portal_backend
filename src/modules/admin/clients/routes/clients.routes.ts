@@ -8,7 +8,9 @@ import { clientsController } from '../controllers/clients.controller.js';
 import { membersController } from '../controllers/members.controller.js';
 import { projectsController } from '../controllers/projects.controller.js';
 import { taskLinksController } from '../controllers/task-links.controller.js';
+import { projectTagsController } from '../controllers/project-tags.controller.js';
 import { adminVotingController } from '../controllers/voting.controller.js';
+import { setProjectTagsBody } from '../validators/project-tags.validators.js';
 import {
   memberParams,
   registerClientBody,
@@ -155,6 +157,18 @@ adminClientsRoutes.patch(
   asyncHandler(projectsController.setVisibility),
 );
 
+// Replace a project's Aidapt tags (and which one is primary, which sets the
+// card's accent). Aidapt staff only: tags are shown to the client.
+adminClientsRoutes.put(
+  '/:id/projects/:listId/tags',
+  requireAidaptStaff,
+  validate({
+    params: tenantIdParam.extend({ listId: z.string().trim().min(1).max(64) }),
+    body: setProjectTagsBody,
+  }),
+  asyncHandler(projectTagsController.setForProject),
+);
+
 // --- Wishlist → onboarding origin (which wishlist item a task came from) ---
 
 adminClientsRoutes.get(
@@ -186,6 +200,18 @@ adminClientsRoutes.patch(
     body: z.object({ project_list_id: z.string().trim().min(1).max(64).nullable() }),
   }),
   asyncHandler(taskLinksController.setWishlistProject),
+);
+
+// Which project (ClickUp list) delivers an onboarding request. `project_list_id:
+// null` unlinks. Aidapt staff only, like the wishlist link above.
+adminClientsRoutes.patch(
+  '/:id/tasks/:taskId/project',
+  requireAidaptStaff,
+  validate({
+    params: tenantIdParam.extend({ taskId: z.string().trim().min(1).max(64) }),
+    body: z.object({ project_list_id: z.string().trim().min(1).max(64).nullable() }),
+  }),
+  asyncHandler(taskLinksController.setOnboardingProject),
 );
 
 // --- Voting cycles (tenant-scoped; /internal/voting/close-cycle is global) ---

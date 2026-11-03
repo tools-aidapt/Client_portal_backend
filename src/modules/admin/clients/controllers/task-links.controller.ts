@@ -36,4 +36,11 @@ export const taskLinksController = {
     const link = await taskLinksRepo.setWishlistProject(req.params.id!, req.params.itemId!, project_list_id);
     res.status(StatusCodes.OK).json(ok(link));
   },
+
+  /** Set (or clear, with `null`) the project an onboarding request is delivered through. */
+  async setOnboardingProject(req: Request, res: Response): Promise<void> {
+    const { project_list_id } = req.body as { project_list_id: string | null };
+    const link = await taskLinksRepo.setOnboardingProject(req.params.id!, req.params.taskId!, project_list_id);
+    res.status(StatusCodes.OK).json(ok(link));
+  },
 };

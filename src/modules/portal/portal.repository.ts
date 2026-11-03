@@ -1,5 +1,6 @@
 import { pool } from '@infra/db/pool.js';
 import { logger } from '@infra/logger/index.js';
+import type { ProjectTag } from './project-tags.js';
 
 // `clickup_list_id` is required, not decorative: projects() groups tasks by it.
 // Leaving it out silently returned an empty task list for every project (and so
@@ -173,6 +174,29 @@ export const portalRepo = {
   },
 
   /** The status catalogue, in display order, for deriving a project's own status. */
+  /**
+   * Every tag attached to the tenant's projects, grouped by ClickUp list id, in
+   * display order (primary first, then sort_order, then label). One query for
+   * the whole tenant so /projects never does a lookup per project.
+   */
+  async projectTagsByList(tenantId: string): Promise<Map<string, ProjectTag[]>> {
+    const { rows } = await pool.query<ProjectTag & { clickup_list_id: string }>(
+      `select a.clickup_list_id, t.id, t.key, t.label, t.tone, a.is_primary
+         from portal.project_tag_assignments a
+         join portal.project_tags t on t.id = a.tag_id
+        where a.tenant_id = $1
+        order by a.is_primary desc, t.sort_order, t.label`,
+      [tenantId],
+    );
+    const byList = new Map<string, ProjectTag[]>();
+    for (const { clickup_list_id, ...tag } of rows) {
+      const list = byList.get(clickup_list_id) ?? [];
+      list.push(tag);
+      byList.set(clickup_list_id, list);
+    }
+    return byList;
+  },
+
   async taskStatuses(): Promise<
     Array<{ key: string; label: string; tone: string; bucket: string; sort_order: number }>
   > {
@@ -304,7 +328,7 @@ export const portalRepo = {
    */
   async onboardingTasks(tenantId: string): Promise<Array<Record<string, unknown>>> {
     const { rows } = await pool.query(
-      `select ${TASK_COLUMNS}, tc.display_title, tc.source_wishlist_item_id,
+      `select ${TASK_COLUMNS}, tc.display_title, tc.source_wishlist_item_id, tc.project_list_id,
               wi.title as source_wishlist_title
          from portal.task_cache tc
          join portal.clickup_list_mappings m

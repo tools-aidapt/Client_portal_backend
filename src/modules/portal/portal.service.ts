@@ -1,6 +1,8 @@
 import { config } from '@config/index.js';
 import { portalRepo } from './portal.repository.js';
-import { parseProjectName } from './project-name.js';
+import { buildLinkedProject, type LinkableProject } from './linked-project.js';
+import { parseNameSuffixCapability, parseProjectName } from './project-name.js';
+import { accentTone } from './project-tags.js';
 
 type Bucket = 'delivered' | 'in_progress' | 'upcoming';
 
@@ -73,9 +75,10 @@ export const portalService = {
    * synced. `status` (the bucket, for tabs and counts) comes from the same place.
    */
   async projects(tenantId: string) {
-    const [projects, catalogue] = await Promise.all([
+    const [projects, catalogue, tagsByList] = await Promise.all([
       portalRepo.projects(tenantId),
       portalRepo.taskStatuses(),
+      portalRepo.projectTagsByList(tenantId),
     ]);
     return {
       total: projects.length,
@@ -84,6 +87,7 @@ export const portalService = {
         const fine = projectStatusKey(p.tasks, catalogue);
         const status = projectStatus(p.tasks);
         const { display_name, capability } = parseProjectName(p.name);
+        const tags = tagsByList.get(p.clickup_list_id) ?? [];
         return {
           clickup_list_id: p.clickup_list_id,
           name: p.name,
@@ -93,6 +97,8 @@ export const portalService = {
           status_key: fine?.key ?? null,
           status_label: fine?.label ?? null,
           status_tone: fine?.tone ?? null,
+          tags,
+          accent_tone: accentTone(tags, fine?.tone),
           progress_pct: projectProgress(p.tasks),
           delivered_at: status === 'delivered' ? latestClosedAt(p.tasks) : null,
           phase_total: p.tasks.length,
@@ -126,7 +132,19 @@ export const portalService = {
     // nowhere.
     // `statuses` is the catalogue, so the page can group and label tasks by
     // their real status (Backlog, In progress, Live, …) in catalogue order.
-    return { tasks, statuses, intake_form_url: config.web.onboardingFormUrl ?? null };
+    // Resolve each task's linked project through the Projects computation, so it
+    // reads exactly as it does on the Projects page. Only run when something is
+    // linked; a project hidden from the client resolves to null.
+    const byList = new Map<string, LinkableProject>();
+    if (tasks.some((t) => t.project_list_id)) {
+      for (const p of (await this.projects(tenantId)).projects) byList.set(p.clickup_list_id, p);
+    }
+    const rows = tasks.map(({ project_list_id, ...task }) => ({
+      ...task,
+      linked_project: project_list_id ? buildLinkedProject(byList.get(String(project_list_id))) : null,
+      capability: task.parent_task_id ? null : parseNameSuffixCapability(String(task.name ?? '')),
+    }));
+    return { tasks: rows, statuses, intake_form_url: config.web.onboardingFormUrl ?? null };
   },
 
   async pod(tenantId: string) {

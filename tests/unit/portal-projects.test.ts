@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const projects = vi.fn();
 const taskStatuses = vi.fn();
 vi.mock('@modules/portal/portal.repository.js', () => ({
-  portalRepo: { projects: (...a: unknown[]) => projects(...a), taskStatuses: (...a: unknown[]) => taskStatuses(...a) },
+  portalRepo: { projects: (...a: unknown[]) => projects(...a), projectTagsByList: async () => new Map(), taskStatuses: (...a: unknown[]) => taskStatuses(...a) },
 }));
 vi.mock('@config/index.js', () => ({ config: { web: {} } }));
 

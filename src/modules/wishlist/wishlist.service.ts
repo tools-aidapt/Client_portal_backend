@@ -1,5 +1,6 @@
 import { config } from '@config/index.js';
 import { portalService } from '@modules/portal/portal.service.js';
+import { buildLinkedProject } from '@modules/portal/linked-project.js';
 import { wishlistRepo } from './wishlist.repository.js';
 
 export const wishlistService = {
@@ -53,17 +54,7 @@ export const wishlistService = {
       const p = project_list_id ? byList.get(String(project_list_id)) : undefined;
       return {
         ...item,
-        linked_project: p
-          ? {
-              list_id: p.clickup_list_id,
-              name: p.display_name,
-              status_key: p.status_key,
-              status_label: p.status_label,
-              status_tone: p.status_tone ?? null,
-              capability: p.capability ?? null,
-              progress_pct: p.progress_pct,
-            }
-          : null,
+        linked_project: buildLinkedProject(p),
       };
     });
   },
