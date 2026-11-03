@@ -1,5 +1,6 @@
 import { config } from '@config/index.js';
 import { portalRepo } from './portal.repository.js';
+import { parseProjectName } from './project-name.js';
 
 type Bucket = 'delivered' | 'in_progress' | 'upcoming';
 
@@ -25,8 +26,7 @@ type StatusRow = { key: string; label: string; tone: string; bucket: string; sor
  * which is exactly the complaint that prompted the catalogue. So: the project
  * takes the status of its most advanced phase that is not yet delivered
  * (highest catalogue sort order — UAT beats In progress beats To do). When
- * every phase is delivered it takes the most advanced delivered one (Live over
- * Complete). A phase whose status the catalogue doesn't know is ignored here
+ * every phase is delivered it takes the most advanced delivered one. A phase whose status the catalogue doesn't know is ignored here
  * and still counts through its bucket. No phases: To do.
  */
 function projectStatusKey(
@@ -56,38 +56,45 @@ function projectProgress(phases: Array<Record<string, unknown>>): number | null 
   return Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length);
 }
 
+/** When a delivered project finished: the latest `closed_at` among its phases, ISO. */
+function latestClosedAt(phases: Array<Record<string, unknown>>): string | null {
+  const times = phases
+    .map((p) => (p.closed_at ? new Date(p.closed_at as Date | string).getTime() : NaN))
+    .filter((n) => Number.isFinite(n));
+  return times.length === 0 ? null : new Date(Math.max(...times)).toISOString();
+}
+
 export const portalService = {
   /**
    * Projects with their phases, plus the status catalogue so the client can
-   * label filters and the staff status menu without a second request.
+   * label filters without a second request.
    *
-   * A project's status is staff's manual pin when set, otherwise derived from
-   * its phases. `status` (the bucket, for tabs and counts) follows whichever
-   * wins, so a project pinned to Complete moves to the Done tab.
+   * A project's status is derived from its phases, which carry what ClickUp
+   * synced. `status` (the bucket, for tabs and counts) comes from the same place.
    */
   async projects(tenantId: string) {
     const [projects, catalogue] = await Promise.all([
       portalRepo.projects(tenantId),
       portalRepo.taskStatuses(),
     ]);
-    const byKey = new Map(catalogue.map((c) => [c.key, c]));
     return {
       total: projects.length,
       statuses: catalogue,
       projects: projects.map((p) => {
-        const pinned = p.status_override_key ? (byKey.get(p.status_override_key) ?? null) : null;
-        const fine = pinned ?? projectStatusKey(p.tasks, catalogue);
+        const fine = projectStatusKey(p.tasks, catalogue);
+        const status = projectStatus(p.tasks);
+        const { display_name, capability } = parseProjectName(p.name);
         return {
           clickup_list_id: p.clickup_list_id,
           name: p.name,
-          status: pinned ? (pinned.bucket as Bucket) : projectStatus(p.tasks),
+          display_name,
+          capability,
+          status,
           status_key: fine?.key ?? null,
           status_label: fine?.label ?? null,
           status_tone: fine?.tone ?? null,
-          status_overridden: pinned !== null,
-          status_override_at: pinned ? p.status_override_at : null,
-          status_override_by_name: pinned ? p.status_override_by_name : null,
           progress_pct: projectProgress(p.tasks),
+          delivered_at: status === 'delivered' ? latestClosedAt(p.tasks) : null,
           phase_total: p.tasks.length,
           phase_done: p.tasks.filter((t) => t.bucket === 'delivered').length,
           tasks: p.tasks,

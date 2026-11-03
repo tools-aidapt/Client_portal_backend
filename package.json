@@ -1,7 +1,7 @@
 {
   "name": "client-portal-backend",
   "version": "0.1.0",
-  "description": "Client Portal Backend API",
+  "description": "The Aidapt Hub Backend API",
   "type": "module",
   "main": "dist/server.js",
   "engines": {

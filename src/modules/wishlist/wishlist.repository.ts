@@ -83,7 +83,7 @@ export const wishlistRepo = {
   ): Promise<Array<Record<string, unknown>>> {
     const { rows } = await pool.query(
       `select wi.id, wi.title, wi.description, wi.reference_video_url, wi.department,
-              wi.state, wi.created_at,
+              wi.state, wi.created_at, wi.project_list_id,
               wi.problem, wi.who_feels_pain, wi.urgency, wi.submitter_notes,
               wi.submitter_name, wi.submitter_role, wi.submitter_company, wi.submitted_at,
               -- Only when the parse found nothing: keeps the list payload small in

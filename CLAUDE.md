@@ -427,8 +427,8 @@ Sync flow chosen: **ClickUp → n8n (cloud, hourly) → `POST /internal/sync/all
 The HMAC `/webhooks/clickup` route exists but is **unused** in this model.
 Requires the backend to be publicly reachable (cloud n8n can't reach localhost).
 
-- `email.invite` — **LIVE**: posts to `N8N_INVITE_WEBHOOK_URL` with the Partner
-  Portal welcome copy (subject `Your Aidapt Partner Portal login`, preheader,
+- `email.invite` — **LIVE**: posts to `N8N_INVITE_WEBHOOK_URL` with The Aidapt Hub
+  welcome copy (subject `Your login for The Aidapt Hub`, preheader,
   html, text) plus the merge fields (`first_name`, `portal_url`, `login_email`,
   `track_name`, `company_name`, `support_email`, `aidapt_lead_*`, …). The copy
   lives in `invite-email.template.ts` so a rewrite does not require editing the
@@ -549,13 +549,11 @@ STUBBED (log-only, need real integration):
   `clickup_status_map.status_key` → `portal.task_statuses` (the client-facing
   catalogue: label, badge tone, bucket, order; `in client review` renders as
   **UAT**). `task_cache.bucket` still feeds every count but is derived from the
-  effective status. Platform admins can pin a status by hand
-  (`PATCH /admin/clients/:id/tasks/:taskId/status`) — Hub-only, never written to
-  ClickUp; `upsertTask` keeps the pin until ClickUp's own status changes, then
-  drops it. Projects can be pinned too (`PATCH /admin/clients/:id/projects/:listId/status`,
-  migration `0045`, stored on `clickup_list_mappings`; never cleared by the sync).
-  Both writes use `requireAidaptStaff` (platform admin AND aidapt.co login).
-  Completion % (`completion_pct`, project `progress_pct`) is derived from Hub
+  effective status. Status comes ONLY from ClickUp: the manual override columns
+  (`task_cache.status_override_*`, `clickup_list_mappings.status_override_*`) were
+  retired in migration `0046` (nulled, columns kept) along with the `live` status
+  (folded into `complete`). A phase that is itself delivered reads 100%.
+  Completion % (`completion_pct`, project `progress_pct`) is derived from synced
   statuses, NOT ClickUp's Progress % field, so manual changes move the numbers. The client reads `status_label ?? status_raw`; an unmapped ClickUp
   status therefore still shows its own words instead of vanishing. Add a new
   ClickUp status by inserting a `task_statuses` row (if it's a genuinely new

@@ -1,4 +1,4 @@
-# The `portal` schema — Client Portal's own data, explained from scratch
+# The `portal` schema — The Aidapt Hub's own data, explained from scratch
 
 This picks up where `core.md` leaves off. Everything here assumes `core` has already
 answered "who is this person, and which tenant are they acting as" — every table below

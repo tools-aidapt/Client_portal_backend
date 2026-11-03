@@ -1,4 +1,5 @@
 import { config } from '@config/index.js';
+import { portalService } from '@modules/portal/portal.service.js';
 import { wishlistRepo } from './wishlist.repository.js';
 
 export const wishlistService = {
@@ -26,7 +27,7 @@ export const wishlistService = {
     return {
       cycle,
       last_closed_cycle: lastClosed,
-      items,
+      items: await this.withLinkedProjects(tenantId, items),
       // The public request form. Requests are authored in ClickUp, not here: the
       // form writes to the shared "ORG - Client - Wishlist" list and the item
       // appears on the board at the next sync. One form serves every client
@@ -35,6 +36,34 @@ export const wishlistService = {
       // disables the button rather than linking nowhere.
       submit_form_url: config.web.wishlistFormUrl ?? null,
     };
+  },
+
+  /**
+   * Attach `linked_project` to each item. Reuses the Projects computation so a
+   * linked project reads exactly as it does on the Projects page; it is only run
+   * when some item is linked. A project hidden from the client resolves to null.
+   */
+  async withLinkedProjects(tenantId: string, items: Array<Record<string, unknown>>) {
+    const byList = new Map<string, Awaited<ReturnType<typeof portalService.projects>>['projects'][number]>();
+    if (items.some((i) => i.project_list_id)) {
+      const { projects } = await portalService.projects(tenantId);
+      for (const p of projects) byList.set(p.clickup_list_id, p);
+    }
+    return items.map(({ project_list_id, ...item }) => {
+      const p = project_list_id ? byList.get(String(project_list_id)) : undefined;
+      return {
+        ...item,
+        linked_project: p
+          ? {
+              list_id: p.clickup_list_id,
+              name: p.display_name,
+              status_key: p.status_key,
+              status_label: p.status_label,
+              progress_pct: p.progress_pct,
+            }
+          : null,
+      };
+    });
   },
 
   async submit(

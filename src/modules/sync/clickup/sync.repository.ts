@@ -343,13 +343,8 @@ export const syncRepo = {
   /**
    * Idempotent upsert keyed by clickup_task_id.
    *
-   * A manual status override (set in the Hub, never written to ClickUp) is
-   * kept across syncs for as long as ClickUp's own status stands still. The
-   * moment ClickUp moves the task to a different status the override is
-   * dropped: that is newer information than the admin's pin, and keeping the
-   * pin would let a task marked "UAT" by hand sit there after ClickUp closed
-   * it. `bucket` always follows the EFFECTIVE status (override, else synced),
-   * which is what every count downstream reads.
+   * Status comes only from ClickUp: `status_key` and `bucket` are overwritten
+   * on every sync (the old manual override columns are retired, see 0046).
    */
   async upsertTask(t: TaskCacheUpsert): Promise<void> {
     await pool.query(
@@ -370,19 +365,7 @@ export const syncRepo = {
          display_title = excluded.display_title,
          status_raw = excluded.status_raw,
          status_key = excluded.status_key,
-         status_override_key = case
-           when excluded.status_key is distinct from task_cache.status_key then null
-           else task_cache.status_override_key end,
-         status_override_by = case
-           when excluded.status_key is distinct from task_cache.status_key then null
-           else task_cache.status_override_by end,
-         status_override_at = case
-           when excluded.status_key is distinct from task_cache.status_key then null
-           else task_cache.status_override_at end,
-         bucket = case
-           when excluded.status_key is distinct from task_cache.status_key
-             or task_cache.status_override_key is null then excluded.bucket
-           else (select s.bucket from portal.task_statuses s where s.key = task_cache.status_override_key) end,
+         bucket = excluded.bucket,
          rag = excluded.rag,
          progress_pct = excluded.progress_pct,
          type_of_work = excluded.type_of_work,

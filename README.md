@@ -1,4 +1,4 @@
-# Client Portal Backend
+# The Aidapt Hub Backend
 
 A professional, scalable REST API built with **Node.js + TypeScript + Express**,
 backed by **Supabase (Postgres + Auth + RLS)**.

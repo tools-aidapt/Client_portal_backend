@@ -81,4 +81,38 @@ export const taskLinksRepo = {
     );
     return rows;
   },
+
+  /**
+   * Point a wishlist item at the project that delivered it, or clear the link
+   * with null. The item and the list are both checked against the tenant first
+   * (the composite FK enforces the list half too, but only as a 500).
+   */
+  async setWishlistProject(
+    tenantId: string,
+    itemId: string,
+    projectListId: string | null,
+  ): Promise<{ item_id: string; project_list_id: string | null }> {
+    return withTransaction(async (client) => {
+      const { rows: itemRows } = await client.query(
+        `select 1 from portal.wishlist_items where id = $1 and tenant_id = $2`,
+        [itemId, tenantId],
+      );
+      if (!itemRows[0]) throw new NotFoundError('No wishlist item with that id for this client');
+
+      if (projectListId) {
+        const { rows: listRows } = await client.query(
+          `select 1 from portal.clickup_list_mappings
+            where tenant_id = $1 and clickup_list_id = $2 and purpose = 'project'`,
+          [tenantId, projectListId],
+        );
+        if (!listRows[0]) throw new NotFoundError('No project with that list id for this client');
+      }
+
+      await client.query(
+        `update portal.wishlist_items set project_list_id = $3 where id = $1 and tenant_id = $2`,
+        [itemId, tenantId, projectListId],
+      );
+      return { item_id: itemId, project_list_id: projectListId };
+    });
+  },
 };

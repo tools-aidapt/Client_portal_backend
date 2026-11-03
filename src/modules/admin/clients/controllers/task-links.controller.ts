@@ -29,4 +29,11 @@ export const taskLinksController = {
     );
     res.status(StatusCodes.OK).json(ok(link));
   },
+
+  /** Set (or clear, with `null`) the project a wishlist item was delivered through. */
+  async setWishlistProject(req: Request, res: Response): Promise<void> {
+    const { project_list_id } = req.body as { project_list_id: string | null };
+    const link = await taskLinksRepo.setWishlistProject(req.params.id!, req.params.itemId!, project_list_id);
+    res.status(StatusCodes.OK).json(ok(link));
+  },
 };

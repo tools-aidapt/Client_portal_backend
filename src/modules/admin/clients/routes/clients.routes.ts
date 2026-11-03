@@ -8,7 +8,6 @@ import { clientsController } from '../controllers/clients.controller.js';
 import { membersController } from '../controllers/members.controller.js';
 import { projectsController } from '../controllers/projects.controller.js';
 import { taskLinksController } from '../controllers/task-links.controller.js';
-import { taskStatusController } from '../controllers/task-status.controller.js';
 import { adminVotingController } from '../controllers/voting.controller.js';
 import {
   memberParams,
@@ -156,38 +155,6 @@ adminClientsRoutes.patch(
   asyncHandler(projectsController.setVisibility),
 );
 
-// --- Manual status (Hub-only; never written back to ClickUp) ---
-// Aidapt staff only (platform admin on an aidapt.co login), stricter than the
-// router-wide platform-admin gate: these change what a client reads about its
-// own delivery.
-
-const statusBody = z.object({ status_key: z.string().min(1).max(64).nullable() });
-
-// A whole project. `status_key: null` clears the pin so it is derived from its
-// phases again.
-adminClientsRoutes.patch(
-  '/:id/projects/:listId/status',
-  requireAidaptStaff,
-  validate({
-    params: tenantIdParam.extend({ listId: z.string().min(1) }),
-    body: statusBody,
-  }),
-  asyncHandler(taskStatusController.setProjectStatus),
-);
-
-// `:taskId` is the ClickUp task id, same as the wishlist-source route. Works
-// on phases and subtasks alike — both are task_cache rows. `status_key: null`
-// clears the pin so the task follows ClickUp again.
-adminClientsRoutes.patch(
-  '/:id/tasks/:taskId/status',
-  requireAidaptStaff,
-  validate({
-    params: tenantIdParam.extend({ taskId: z.string().min(1) }),
-    body: z.object({ status_key: z.string().min(1).max(64).nullable() }),
-  }),
-  asyncHandler(taskStatusController.setStatus),
-);
-
 // --- Wishlist → onboarding origin (which wishlist item a task came from) ---
 
 adminClientsRoutes.get(
@@ -206,6 +173,19 @@ adminClientsRoutes.patch(
     body: z.object({ wishlist_item_id: z.string().uuid().nullable() }),
   }),
   asyncHandler(taskLinksController.setWishlistSource),
+);
+
+// Which project (ClickUp list) delivered a wishlist item, so the client's board
+// can show that project's status. `project_list_id: null` unlinks. Aidapt staff
+// only: it changes what a client reads about its own delivery.
+adminClientsRoutes.patch(
+  '/:id/wishlist/:itemId/project',
+  requireAidaptStaff,
+  validate({
+    params: tenantIdParam.extend({ itemId: z.string().uuid() }),
+    body: z.object({ project_list_id: z.string().trim().min(1).max(64).nullable() }),
+  }),
+  asyncHandler(taskLinksController.setWishlistProject),
 );
 
 // --- Voting cycles (tenant-scoped; /internal/voting/close-cycle is global) ---

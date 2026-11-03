@@ -12,8 +12,8 @@ import { logger } from '@infra/logger/index.js';
 // with `column reference "clickup_list_id" is ambiguous` — GET /onboarding was
 // a 500 for every tenant. Qualifying here keeps the three callers in step.
 //
-// Status reaches the client as three things, all derived from the EFFECTIVE
-// status (a manual Hub override, else the key the sync resolved):
+// Status reaches the client as three things, all derived from the key the sync
+// resolved from ClickUp (there is no manual override any more):
 //   `status_key`   — catalogue key (`client_review`), for logic
 //   `status_label` — the words to show ("UAT"), from portal.task_statuses
 //   `status_tone`  — the badge colour
@@ -23,13 +23,9 @@ import { logger } from '@infra/logger/index.js';
 const TASK_COLUMNS = `tc.clickup_task_id, tc.clickup_list_id, tc.parent_task_id, tc.name,
   tc.bucket, tc.status_raw, tc.rag, tc.progress_pct, tc.type_of_work, tc.assignee_names,
   tc.start_date, tc.due_date, tc.url, tc.list_name, tc.clickup_updated_at,
-  coalesce(tc.status_override_key, tc.status_key) as status_key,
-  ts.label as status_label, ts.tone as status_tone, ts.sort_order as status_sort,
-  (tc.status_override_key is not null) as status_overridden,
-  tc.status_override_at, pov.full_name as status_override_by_name`;
-const TASK_STATUS_JOIN = `left join portal.task_statuses ts
-    on ts.key = coalesce(tc.status_override_key, tc.status_key)
-  left join core.profiles pov on pov.id = tc.status_override_by`;
+  tc.closed_at, tc.status_key,
+  ts.label as status_label, ts.tone as status_tone, ts.sort_order as status_sort`;
+const TASK_STATUS_JOIN = `left join portal.task_statuses ts on ts.key = tc.status_key`;
 
 /** Run a summary query owned by another team; return null if its table is absent. */
 async function summaryOrNull(
@@ -65,23 +61,15 @@ export const portalRepo = {
     Array<{
       clickup_list_id: string;
       name: string;
-      status_override_key: string | null;
-      status_override_at: Date | null;
-      status_override_by_name: string | null;
       tasks: Array<Record<string, unknown>>;
     }>
   > {
     const { rows } = await pool.query<{
       clickup_list_id: string;
       display_label: string | null;
-      status_override_key: string | null;
-      status_override_at: Date | null;
-      status_override_by_name: string | null;
     }>(
-      `select m.clickup_list_id, m.display_label, m.status_override_key, m.status_override_at,
-              p.full_name as status_override_by_name
+      `select m.clickup_list_id, m.display_label
          from portal.clickup_list_mappings m
-         left join core.profiles p on p.id = m.status_override_by
         where m.tenant_id = $1 and m.purpose = 'project' and m.client_visible = true and m.is_active = true
         order by m.display_label`,
       [tenantId],
@@ -127,17 +115,20 @@ export const portalRepo = {
       (childrenByParent.get(id) ?? []).flatMap((c) => [c, ...allBelow(c.clickup_task_id)]);
 
     /**
-     * Completion from Hub statuses, not ClickUp's "Progress %": the share of a
-     * task's descendants that are delivered, or 0/100 for a leaf. ClickUp's
-     * figure ignores a status set by hand in the Hub, so a phase moved to
-     * Complete here would still read 40%. Deriving it from `bucket` (which
-     * follows the effective status) keeps every number in step with the badges.
+     * Completion from the synced status, not ClickUp's "Progress %": the share
+     * of a task's descendants that are delivered, or 0/100 for a leaf. Deriving
+     * it from `bucket` keeps every number in step with the badges.
      *
      * The task itself counts as one more item. Without it a phase sitting in
      * UAT whose subtasks are all complete read 100%, which tells a client the
      * work is done before they have signed it off.
+     *
+     * The exception is a task that is itself delivered: signed off means 100%
+     * whatever is still open beneath it (stale subtasks nobody closed), so a
+     * project whose phases are all delivered reads 100.
      */
     const completionOf = (t: Row): number => {
+      if (t.bucket === 'delivered') return 100;
       const items = [t, ...allBelow(t.clickup_task_id)];
       return Math.round((items.filter((d) => d.bucket === 'delivered').length / items.length) * 100);
     };
@@ -177,9 +168,6 @@ export const portalRepo = {
     return rows.map((r) => ({
       clickup_list_id: r.clickup_list_id,
       name: r.display_label ?? r.clickup_list_id,
-      status_override_key: r.status_override_key,
-      status_override_at: r.status_override_at,
-      status_override_by_name: r.status_override_by_name,
       tasks: phasesByList.get(r.clickup_list_id) ?? [],
     }));
   },
