@@ -73,4 +73,16 @@ describe('portalService.projects', () => {
       progress_pct: 70,
     });
   });
+
+  it('reads In progress, not To do, once some phases are delivered and the rest have not started', async () => {
+    projects.mockResolvedValue([
+      {
+        clickup_list_id: 'L3',
+        name: 'OPS - Licenses',
+        tasks: [phase('delivered', 'complete', '2026-10-01T10:00:00.000Z', 100), phase('upcoming', 'to_do', null, 0)],
+      },
+    ]);
+    const { projects: rows } = await portalService.projects('t1');
+    expect(rows[0]).toMatchObject({ status: 'in_progress', status_key: 'in_progress', status_label: 'In progress' });
+  });
 });

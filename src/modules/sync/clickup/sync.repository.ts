@@ -345,6 +345,8 @@ export const syncRepo = {
    *
    * Status comes only from ClickUp: `status_key` and `bucket` are overwritten
    * on every sync (the old manual override columns are retired, see 0046).
+   * The one Hub-side exception is `hidden_from_client` (0050): a task staff
+   * have taken out of the client's view stays hidden across syncs.
    */
   async upsertTask(t: TaskCacheUpsert): Promise<void> {
     await pool.query(
@@ -370,7 +372,7 @@ export const syncRepo = {
          progress_pct = excluded.progress_pct,
          type_of_work = excluded.type_of_work,
          parent_task_id = excluded.parent_task_id,
-         client_visible = excluded.client_visible,
+         client_visible = excluded.client_visible and not task_cache.hidden_from_client,
          assignee_names = excluded.assignee_names,
          start_date = excluded.start_date,
          due_date = excluded.due_date,

@@ -42,7 +42,13 @@ function projectStatusKey(
   if (known.length === 0) return byKey.get('to_do') ?? null;
   const open = known.filter((c) => c.bucket !== 'delivered');
   const pool = open.length > 0 ? open : known;
-  return pool.reduce((best, c) => (c.sort_order > best.sort_order ? c : best));
+  const pick = pool.reduce((best, c) => (c.sort_order > best.sort_order ? c : best));
+  // Work has started once any phase is delivered or underway, so the project
+  // can't read "To do" or "Planning" (7 of 8 phases done showed "To do").
+  if (pick.bucket === 'upcoming' && projectStatus(tasks) === 'in_progress') {
+    return byKey.get('in_progress') ?? pick;
+  }
+  return pick;
 }
 
 /**
